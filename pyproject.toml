@@ -5,8 +5,7 @@ description = "Generic robust authentication system"
 authors = ["A K M Muhibullah Nayem <nayem.drmc@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/MuhibNayem/auth-manager.git"
-readme = "README.md"  
-long_description_content_type = "text/markdown"
+readme = "README.md"
 include = ["auth_package/examples/**"]
 
 [tool.poetry.dependencies]
