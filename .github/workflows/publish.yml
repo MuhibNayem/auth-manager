@@ -21,6 +21,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v2
 
+      - name: Stop workflow if pushed by GitHub Actions bot
+        run: |
+          if [[ "$(git log -1 --pretty=format:'%an')" == "github-actions[bot]" ]]; then
+            echo "Commit was pushed by GitHub Actions bot. Stopping workflow."
+            exit 0
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@v2
         with:
@@ -57,9 +64,12 @@ jobs:
           poetry version ${{ env.version }}
 
       - name: Commit version bump
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           git config --global user.name "GitHub Action"
           git config --global user.email "action@github.com"
+          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
           git add pyproject.toml
           git commit -m "Bump version to v${{ env.version }}"
           git push origin main
