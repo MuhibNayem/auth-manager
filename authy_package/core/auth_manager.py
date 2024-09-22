@@ -1,14 +1,14 @@
-from auth_package.utils.security import hash_password, verify_password
-from auth_package.db.abstract_db import AbstractDatabase
-from auth_package.db.sql import SQLDatabase 
-from auth_package.cache.abstract_cache import AbstractCache
-from auth_package.cognito.cognito_manager import CognitoManager
-from auth_package.social.apple import AppleManager
-from auth_package.social.github import GitHubManager
-from auth_package.social.facebook import FacebookManager
-from auth_package.social.google import GoogleManager
-from auth_package.mfa.mfa_setup import MFAAuthManager
-from auth_package.utils.security import SecurityManager
+from authy_package.utils.security import hash_password, verify_password
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.db.sql import SQLDatabase 
+from authy_package.cache.abstract_cache import AbstractCache
+from authy_package.cognito.cognito_manager import CognitoManager
+from authy_package.social.apple import AppleManager
+from authy_package.social.github import GitHubManager
+from authy_package.social.facebook import FacebookManager
+from authy_package.social.google import GoogleManager
+from authy_package.mfa.mfa_setup import MFAAuthManager
+from authy_package.utils.security import SecurityManager
 
 ## for Traditional Auth Flow
 class TraditionalAuthManager:

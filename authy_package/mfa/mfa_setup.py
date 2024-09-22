@@ -1,5 +1,5 @@
 import pyotp
-from auth_package.db.abstract_db import AbstractDatabase
+from authy_package.db.abstract_db import AbstractDatabase
 
 class MFAAuthManager:
     def __init__(self, db: AbstractDatabase):

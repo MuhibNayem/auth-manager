@@ -1,10 +1,10 @@
 import asyncio
 import os
-from auth_package.core.auth_manager import TraditionalAuthManager
-from auth_package.cache.redis_cache import RedisCaching
-from auth_package.mfa.mfa_setup import MFAAuthManager
-from auth_package.db.mongodb import MongoDB
-from auth_package.utils.security import SecurityManager  
+from authy_package.core.auth_manager import TraditionalAuthManager
+from authy_package.cache.redis_cache import RedisCaching
+from authy_package.mfa.mfa_setup import MFAAuthManager
+from authy_package.db.mongodb import MongoDB
+from authy_package.utils.security import SecurityManager  
 
 # Configuration
 REDIS_URL = "redis://localhost:6379"

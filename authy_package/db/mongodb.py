@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from auth_package.db.abstract_db import AbstractDatabase
+from authy_package.db.abstract_db import AbstractDatabase
 
 class MongoDB(AbstractDatabase):
     def __init__(self, db_url: str, db_name: str, collection_name: str):

@@ -2,8 +2,8 @@ import os
 import hashlib
 import time
 from mailjet_rest import Client
-from auth_package.db.abstract_db import AbstractDatabase
-from auth_package.cache.abstract_cache import AbstractCache
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.cache.abstract_cache import AbstractCache
 from passlib.context import CryptContext
 
 # Password hashing context using bcrypt

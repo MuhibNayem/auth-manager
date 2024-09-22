@@ -1,7 +1,7 @@
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.future import select
-from auth_package.db.abstract_db import AbstractDatabase
+from authy_package.db.abstract_db import AbstractDatabase
 
 class SQLDatabase(AbstractDatabase):
     def __init__(self, db_url: str, orm_model):

@@ -1,11 +1,11 @@
 import asyncio
-from auth_package.core.auth_manager import SocialAuthManager
-from auth_package.cache.redis_cache import RedisCaching
-from auth_package.db.mongodb import MongoDB
-from auth_package.social.facebook import FacebookManager
-from auth_package.social.github import GitHubManager
-from auth_package.social.apple import AppleManager
-from auth_package.social.google import GoogleManager
+from authy_package.core.auth_manager import SocialAuthManager
+from authy_package.cache.redis_cache import RedisCaching
+from authy_package.db.mongodb import MongoDB
+from authy_package.social.facebook import FacebookManager
+from authy_package.social.github import GitHubManager
+from authy_package.social.apple import AppleManager
+from authy_package.social.google import GoogleManager
 import os
 
 # Configuration

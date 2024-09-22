@@ -1,6 +1,6 @@
 import asyncio
-from auth_package.core.auth_manager import CognitoAuthManager
-from auth_package.cognito.cognito_manager import CognitoManager
+from authy_package.core.auth_manager import CognitoAuthManager
+from authy_package.cognito.cognito_manager import CognitoManager
 
 # Configuration for Cognito
 USER_POOL_ID = "your_user_pool_id"

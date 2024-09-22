@@ -2,7 +2,7 @@ import aioredis
 import time
 import hashlib
 
-from auth_package.cache.abstract_cache import AbstractCache
+from authy_package.cache.abstract_cache import AbstractCache
 
 class RedisCaching(AbstractCache):
     def __init__(self, cache_url: str, token_expiration_time: int = 3600, refresh_token_expiration_time: int = 604800, ID_TOKEN_EXPIRATION_TIME:int = 3600):
