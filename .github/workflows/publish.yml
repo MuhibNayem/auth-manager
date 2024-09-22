@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   pypi-publish:
@@ -63,7 +63,7 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           tag_name: "v${{ env.version }}"
-          release_name: "Release v${{ env.version }}"
+          name: "Release v${{ env.version }}"
           draft: false
           prerelease: false
         env:
