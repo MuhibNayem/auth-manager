@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "authy_package"
-version = "0.1.6"
+version = "0.1.7"
 description = "Generic robust authentication system"
 authors = ["A K M Muhibullah Nayem <nayem.drmc@gmail.com>"]
 license = "MIT"
