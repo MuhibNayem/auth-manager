@@ -24,19 +24,17 @@ jobs:
           curl -sSL https://install.python-poetry.org | python3 -
 
       - name: Add Poetry to PATH
-        run: |
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
+        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
 
       - name: Install dependencies
-        run: |
-          poetry install --no-root
+        run: poetry install --no-root
 
       - name: Build package
-        run: |
-          poetry build
+        run: poetry build
 
       - name: Publish to PyPI
         env:
-          POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
+          POETRY_PYPI_USERNAME: ${{ secrets.PYPI_USERNAME }}
+          POETRY_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
         run: |
-          poetry publish --build -u __token__ -p "$POETRY_PYPI_TOKEN_PYPI"
+          poetry publish --build -u $POETRY_PYPI_USERNAME -p $POETRY_PYPI_TOKEN
