@@ -52,6 +52,18 @@ jobs:
           fi
           echo "version=$version" >> $GITHUB_ENV
 
+      - name: Update pyproject.toml with new version
+        run: |
+          poetry version ${{ env.version }}
+
+      - name: Commit version bump
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git add pyproject.toml
+          git commit -m "Bump version to v${{ env.version }}"
+          git push origin main
+
       - name: Build package
         run: poetry build
 
