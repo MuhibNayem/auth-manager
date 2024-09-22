@@ -1,16 +1,14 @@
-name: Publish to PyPI
+name: Publish to PyPI and Create Release
 
 on:
   push:
-    tags:
-      - "v*"
+    branches:
+      - main
   workflow_dispatch:
 
 jobs:
   publish:
     runs-on: ubuntu-latest
-    env:
-      POETRY_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v2
@@ -30,8 +28,41 @@ jobs:
       - name: Install dependencies
         run: poetry install --no-root
 
+      - name: Determine version bump
+        id: version_bump
+        run: |
+          # Check the commit messages for tags
+          if git log -1 --pretty=%B | grep -q '\[major\]'; then
+            version=$(poetry version major -s)
+          elif git log -1 --pretty=%B | grep -q '\[minor\]'; then
+            version=$(poetry version minor -s)
+          else
+            version=$(poetry version patch -s)
+          fi
+          echo "version=$version" >> $GITHUB_ENV
+
       - name: Build package
         run: poetry build
 
       - name: Publish to PyPI
-        run: poetry publish --build -u __token__ -p ${{ env.POETRY_PYPI_TOKEN }} --verbose
+        env:
+          POETRY_PYPI_TOKEN: ${{ secrets.PYPI_TOKEN }}
+        run: poetry publish --build -u __token__ -p ${{ secrets.PYPI_TOKEN }}
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: "v${{ env.version }}"
+          release_name: "Release v${{ env.version }}"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push new version tag
+        run: |
+          git config --global user.name "GitHub Action"
+          git config --global user.email "action@github.com"
+          git tag "v${{ env.version }}"
+          git push origin "v${{ env.version }}"

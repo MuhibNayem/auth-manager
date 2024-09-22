@@ -5,11 +5,11 @@ import hashlib
 from authy_package.cache.abstract_cache import AbstractCache
 
 class RedisCaching(AbstractCache):
-    def __init__(self, cache_url: str, token_expiration_time: int = 3600, refresh_token_expiration_time: int = 604800, ID_TOKEN_EXPIRATION_TIME:int = 3600):
+    def __init__(self, cache_url: str, token_expiration_time: int = 3600, refresh_token_expiration_time: int = 604800, id_token_expiration_time:int = 3600):
         self.redis = aioredis.from_url(cache_url)
         self.TOKEN_EXPIRATION_TIME = token_expiration_time
         self.REFRESH_TOKEN_EXPIRATION_TIME = refresh_token_expiration_time
-        self.ID_TOKEN_EXPIRATION_TIME = ID_TOKEN_EXPIRATION_TIME
+        self.ID_TOKEN_EXPIRATION_TIME = id_token_expiration_time
 
     async def create_token_pair(self, identifier: str):
         access_token = self._generate_token(identifier)
