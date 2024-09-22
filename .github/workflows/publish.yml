@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write # Ensure this is set to write
+  contents: write
 
 jobs:
   pypi-publish:
