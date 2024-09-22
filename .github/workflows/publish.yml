@@ -39,4 +39,4 @@ jobs:
         env:
           POETRY_PYPI_TOKEN_PYPI: ${{ secrets.PYPI_TOKEN }}
         run: |
-          poetry publish --build -u __token__ -p "${POETRY_PYPI_TOKEN_PYPI}"
+          poetry publish --build -u __token__ -p "$POETRY_PYPI_TOKEN_PYPI"
