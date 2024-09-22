@@ -17,5 +17,15 @@ Generic robust authentication system built with FastAPI and Poetry.
 You can install the package via pip:
 
 ```bash
-pip install auth_package
+pip install authy_package
 ```
+
+You can install the package via poetry:
+
+```bash
+poetry add authy_package
+```
+
+## Examples
+
+You can check the examples directory to see the implementations.
