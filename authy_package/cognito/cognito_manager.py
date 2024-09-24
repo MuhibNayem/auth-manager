@@ -10,18 +10,21 @@ class CognitoManager:
         self.user_pool_id = user_pool_id
         self.app_client_id = app_client_id
 
-    def register_user(self, username, password, email):
+    def register_user(self, username, password, email, phone_number=None):
         """
         Registers a new user in the Cognito user pool.
         """
+        user_attributes = [{'Name': 'email', 'Value': email}]
+        
+        if phone_number:
+            user_attributes.append({'Name': 'phone_number', 'Value': phone_number})
+
         try:
             response = self.cognito_client.sign_up(
                 ClientId=self.app_client_id,
                 Username=username,
                 Password=password,
-                UserAttributes=[
-                    {'Name': 'email', 'Value': email}
-                ]
+                UserAttributes=user_attributes
             )
             return response
         except ClientError as e:
@@ -115,7 +118,7 @@ class CognitoManager:
         except ClientError as e:
             return {"Error": str(e)}
 
-    def logout_user(self, access_token=None, provider=None, redirect_uri=None):
+    def logout_user(self, redirect_uri, access_token=None, provider=None):
         """
         Logs out the user by invalidating their access token or through social login.
         """
@@ -169,12 +172,13 @@ class CognitoManager:
         except ClientError as e:
             return {"Error": str(e)}
 
-    def enable_mfa(self, username):
+    def enable_totp_mfa(self, username):
         """
-        Enables MFA for a user.
+        Enables TOTP-based MFA for a user.
         """
         try:
-            response = self.cognito_client.set_user_mfa_preference(
+            response = self.cognito_client.admin_set_user_mfa_preference(
+                UserPoolId=self.user_pool_id,
                 Username=username,
                 SoftwareTokenMfaSettings={
                     'Enabled': True,
@@ -185,13 +189,36 @@ class CognitoManager:
         except ClientError as e:
             return {"Error": str(e)}
 
-    def disable_mfa(self, username):
+    def enable_sms_mfa(self, username):
         """
-        Disables MFA for a user.
+        Enables SMS-based MFA for a user.
+        Requires a verified phone number.
         """
         try:
-            response = self.cognito_client.set_user_mfa_preference(
+            response = self.cognito_client.admin_set_user_mfa_preference(
+                UserPoolId=self.user_pool_id,
                 Username=username,
+                SMSMfaSettings={
+                    'Enabled': True,
+                    'PreferredMfa': True
+                }
+            )
+            return response
+        except ClientError as e:
+            return {"Error": str(e)}
+
+    def disable_mfa(self, username):
+        """
+        Disables all MFA options for the user.
+        """
+        try:
+            response = self.cognito_client.admin_set_user_mfa_preference(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                SMSMfaSettings={
+                    'Enabled': False,
+                    'PreferredMfa': False
+                },
                 SoftwareTokenMfaSettings={
                     'Enabled': False,
                     'PreferredMfa': False
@@ -203,15 +230,9 @@ class CognitoManager:
 
     def verify_mfa(self, access_token, code):
         """
-        Verifies the MFA code.
+        Verifies the MFA code (for TOTP or SMS MFA).
         """
         try:
-            # Associate the software token (if not already associated)
-            self.cognito_client.associate_software_token(
-                AccessToken=access_token
-            )
-            
-            # Verify the MFA code
             response = self.cognito_client.verify_software_token(
                 AccessToken=access_token,
                 UserCode=code,
@@ -220,14 +241,57 @@ class CognitoManager:
         except ClientError as e:
             return {"Error": str(e)}
 
-    def update_user_attributes(self, access_token, attributes):
+    def associate_software_token(self, access_token):
         """
-        Updates user attributes.
+        Associates a software token for MFA (generates a secret key for TOTP).
         """
         try:
-            response = self.cognito_client.update_user_attributes(
-                AccessToken=access_token,
+            response = self.cognito_client.associate_software_token(AccessToken=access_token)
+            return response['SecretCode']
+        except ClientError as e:
+            return {"Error": str(e)}
+
+    def update_user_attributes(self, username, attributes):
+        """
+        Updates user attributes (such as phone number, email).
+        """
+        try:
+            response = self.cognito_client.admin_update_user_attributes(
+                UserPoolId=self.user_pool_id,
+                Username=username,
                 UserAttributes=attributes
+            )
+            return response
+        except ClientError as e:
+            return {"Error": str(e)}
+
+    def update_user_phone_number(self, username, phone_number):
+        """
+        Updates the user's phone number.
+        """
+        try:
+            response = self.cognito_client.admin_update_user_attributes(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                UserAttributes=[
+                    {'Name': 'phone_number', 'Value': phone_number}
+                ]
+            )
+            return response
+        except ClientError as e:
+            return {"Error": str(e)}
+
+    def update_user_email(self, username, email):
+        """
+        Updates the user's email address.
+        """
+        try:
+            response = self.cognito_client.admin_update_user_attributes(
+                UserPoolId=self.user_pool_id,
+                Username=username,
+                UserAttributes=[
+                    {'Name': 'email', 'Value': email}
+                ]
             )
             return response
         except ClientError as e:

@@ -165,7 +165,7 @@ class TraditionalAuthManager:
         }
 
     # Password Reset Functionality
-    async def request_password_reset(self, username=None, email=None, phone=None, sender_email: str = '', sender_name: str = '') -> dict:
+    async def request_password_reset(self, email:str, username:str, phone:str, sender_email: str = '', sender_name: str = '') -> dict:
         """
         Handles a password reset request by generating and sending the reset link.
 
@@ -199,15 +199,16 @@ class CognitoAuthManager:
         """
         self.cognito_manager = cognito_manager
 
-    async def register_user(self, username: str, email: str, password: str):
+    async def register_user(self, username:str, password:str, email:str, phone_number=None):
         """Registers a new user asynchronously.
 
         :param username: The username for the new user.
         :param email: The email address of the new user.
         :param password: The password for the new user.
+        :param phone number: The phone number for the new user.
         :return: The response from the Cognito registration process.
         """
-        return await self.cognito_manager.register_user(username, password, email)
+        return await self.cognito_manager.register_user(self, username, password, email, phone_number)
 
     async def login_user(self, username: str, password: str):
         """Authenticates a user asynchronously.
@@ -218,13 +219,15 @@ class CognitoAuthManager:
         """
         return await self.cognito_manager.authenticate_user(username, password)
 
-    async def logout_user(self, access_token: str):
+    async def logout_user(self, redirect_uri:str, access_token=None, provider=None):
         """Logs out the user asynchronously.
 
-        :param access_token: The access token of the user to be logged out.
+        :param redirect_uri: The redirect_uri for the app to be redirect when logged out.
+        :param access_token: The access token of the user to be logged out. Traditional login logout by invalidating the token ((if you used traditional username & password login, use this))
+        :param provider: The provider name like (Facebook, Google, LoginWithAmazon, etc..) user in app. Logs out the user through social provider. (if you used social provider, use this)
         :return: The response from the Cognito logout process.
         """
-        return await self.cognito_manager.logout_user(access_token)
+        return await self.cognito_manager.logout_user(redirect_uri, access_token, provider)
 
     async def refresh_token(self, refresh_token: str):
         """Refreshes the user's tokens asynchronously.
@@ -288,6 +291,48 @@ class CognitoAuthManager:
         """
         return await self.cognito_manager.update_user_attributes(access_token, attributes)
 
+    async def update_user_phone_number(self, access_token: str, phone_number: str):
+        """
+        Updates the phone number of the user associated with the provided access token.
+
+        This method allows the user to change their phone number. The new phone number
+        must be in a valid format as per the user pool settings. After successfully
+        updating, the user may need to verify the new phone number if required by the
+        user pool configuration.
+
+        Args:
+            access_token (str): The access token of the authenticated user.
+            phone_number (str): The new phone number to be associated with the user's account.
+
+        Returns:
+            dict: The response from AWS Cognito after attempting to update the phone number.
+
+        Raises:
+            ClientError: If there is an issue communicating with AWS Cognito or if the access token is invalid.
+        """
+        return await self.cognito_manager.update_user_phone_number(access_token, phone_number)
+
+    async def update_user_email(self, access_token: str, email: str):
+        """
+        Updates the email address of the user associated with the provided access token.
+
+        This method allows the user to change their email address. The new email must
+        be unique within the user pool and follow standard email format. After successfully
+        updating, the user may need to verify the new email address if required by the user
+        pool configuration.
+
+        Args:
+            access_token (str): The access token of the authenticated user.
+            email (str): The new email address to be associated with the user's account.
+
+        Returns:
+            dict: The response from AWS Cognito after attempting to update the email address.
+
+        Raises:
+            ClientError: If there is an issue communicating with AWS Cognito or if the access token is invalid.
+        """
+        return await self.cognito_manager.update_user_email(access_token, email)
+
     async def get_user_info(self, access_token: str):
         """Retrieves the information of a user using their access token asynchronously.
 
@@ -296,13 +341,21 @@ class CognitoAuthManager:
         """
         return await self.cognito_manager.get_user_info(access_token)
 
-    async def enable_mfa(self, username: str):
-        """Enables MFA for a user asynchronously.
+    async def enable_TOTP_mfa(self, username: str):
+        """Enables TOTP MFA for a user.
 
         :param username: The username of the user for whom MFA is to be enabled.
         :return: The response from the Cognito MFA enabling process.
         """
-        return await self.cognito_manager.enable_mfa(username)
+        return await self.cognito_manager.enable_totp_mfa(username)
+    
+    async def enable_sms_mfa(self, username: str):
+        """Enables TOTP MFA for a user.
+
+        :param username: The username of the user for whom MFA is to be enabled.
+        :return: The response from the Cognito MFA enabling process.
+        """
+        return await self.cognito_manager.enable_sms_mfa(username)
 
     async def disable_mfa(self, username: str):
         """Disables MFA for a user asynchronously.
@@ -320,6 +373,26 @@ class CognitoAuthManager:
         :return: The response from the Cognito MFA verification process.
         """
         return await self.cognito_manager.verify_mfa(access_token, code)
+    
+    async def associate_software_token(self, access_token: str):
+        """
+        Associates a software token for Multi-Factor Authentication (MFA) using a provided access token.
+        
+        This method generates a secret key for Time-based One-Time Password (TOTP) and links it 
+        with the user's account. The user will need to use this secret key to set up their 
+        authenticator app (e.g., Google Authenticator, Authy) for MFA.
+
+        Args:
+            access_token (str): The access token of the authenticated user.
+
+        Returns:
+            str: The secret key for TOTP, which can be used for setting up an authenticator app.
+
+        Raises:
+            ClientError: If there is an issue communicating with AWS Cognito or 
+                        if the access token is invalid.
+        """
+        return await self.cognito_manager.associate_software_token(access_token)
 
 ## for manual Social Auth Flow
 class SocialAuthManager:
@@ -546,7 +619,7 @@ class SocialAuthManager:
             access_token = await self.cache.retrieve_access_token(user_identifier)
             if access_token:
                 # Generate a new refresh token for the retrieved access token
-                refresh_token = await self.cache.generate_refresh_token_for_access_token(access_token)
+                new_access_token, new_refresh_token = await self.cache.create_refresh_token_for_access_token(access_token)
                 
                 # Delete the old access token
                 await self.cache.delete_access_token(access_token)
@@ -554,8 +627,8 @@ class SocialAuthManager:
                 # Update the stored social token with new access and refresh tokens
                 updated_access_token_info = await self.cache.update_social_token(
                     user_identifier,
-                    new_access_token=access_token,  # Optionally generate a new access token
-                    new_refresh_token=refresh_token
+                    new_access_token=new_access_token,
+                    new_refresh_token=new_refresh_token
                 )
                 return updated_access_token_info
 
@@ -563,13 +636,16 @@ class SocialAuthManager:
             # Similar process for Facebook
             access_token = await self.cache.retrieve_access_token(user_identifier)
             if access_token:
-                refresh_token = await self.cache.generate_refresh_token_for_access_token(access_token)
+                # Generate a new refresh token for the retrieved access token
+                new_access_token, new_refresh_token = await self.cache.create_refresh_token_for_access_token(access_token)
+                
+                # Delete the old access token
                 await self.cache.delete_access_token(access_token)
                 
                 updated_access_token_info = await self.cache.update_social_token(
                     user_identifier,
-                    new_access_token=access_token,
-                    new_refresh_token=refresh_token
+                    new_access_token=new_access_token,
+                    new_refresh_token=new_refresh_token
                 )
                 return updated_access_token_info
 

@@ -42,7 +42,7 @@ class SecurityManager:
             version='v3.1'
         )
 
-    async def send_password_reset_email(self, user_email: str, reset_link: str, sender_email: str, sender_name: str) -> dict:
+    async def send_password_reset_email(self, user_email: str, reset_link: str, sender_email: str, sender_name: str, reset_token) -> dict:
         """Sends a password reset email using Mailjet.
 
         :param user_email: The email address of the user to send the reset email to.
@@ -60,11 +60,13 @@ class SecurityManager:
                         Hi there,
                     </p>
                     <p style="font-size: 16px; color: #555;">
-                        We received a request to reset your password. Click the button below to reset it:
+                        We received a request to reset your password. Click the link below to reset it:
                     </p>
-                    <a href="{reset_link}" style="display: inline-block; margin: 20px 0; padding: 12px 20px; background-color: #007bff; color: #ffffff; text-decoration: none; border-radius: 5px;">
+                    <a href="{reset_link}" style="display: inline-block; margin: 20px 0; padding: 12px 20px; background-color: #007bff; color: #FFFFFFFF; text-decoration: none; border-radius: 5px;">
                         Reset Password
                     </a>
+                    <p style="font-size: 14px; color: #555;">here is the reset token for updating the password: <span style="font-size: 16px; color: #3D78D6FF;">"{reset_token}"</span>
+                    </p>
                     <p style="font-size: 14px; color: #777;">
                         If you didn't request this, you can ignore this email. Your password won't change until you create a new one.
                     </p>
@@ -131,7 +133,7 @@ class SecurityManager:
         reset_link = f"http://example.com/reset-password?token={reset_token}&email={user['email']}"
 
         # Send the password reset email
-        await self.send_password_reset_email(user_email=user['email'], reset_link=reset_link, sender_email=sender_email, sender_name=sender_name)
+        await self.send_password_reset_email(user_email=user['email'], reset_link=reset_link, sender_email=sender_email, sender_name=sender_name, reset_token=reset_token)
 
         return {"message": "Password reset link sent."}
 

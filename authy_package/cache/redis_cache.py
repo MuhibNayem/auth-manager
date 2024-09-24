@@ -72,16 +72,17 @@ class RedisCaching(AbstractCache):
             return access_token.decode('utf-8')
         return None
     
-    # New function to generate a refresh token for an existing access token
-    async def generate_refresh_token_for_access_token(self, access_token: str):
+    async def create_refresh_token_for_access_token(self, access_token: str):
         identifier = await self.validate_access_token(access_token)
         if not identifier:
             raise ValueError("Invalid or expired access token.")
 
         refresh_token = self._generate_token(identifier)
-        await self.redis.set(refresh_token, identifier, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
+        access_token = self._generate_token(identifier)
 
-        return refresh_token
+        await self.redis.set(access_token, identifier, ex=self.TOKEN_EXPIRATION_TIME)
+        await self.redis.set(refresh_token, identifier, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
+        return access_token, refresh_token
     
     # Store a reset change password token with an expiration time
     async def store_reset_token(self, email: str, reset_token: str, expiration: int = 900):

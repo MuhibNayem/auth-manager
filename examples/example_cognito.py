@@ -44,14 +44,21 @@ async def main():
     # Update user attributes
     await handle_attribute_update(auth_manager, login_response)
 
-    # Enable MFA
-    await handle_enable_mfa(auth_manager)
+    # Enable TOTP MFA
+    await handle_enable_totp_mfa(auth_manager)
+
+    # Enable SMS MFA
+    await handle_enable_sms_mfa(auth_manager)
 
     # Disable MFA
     await handle_disable_mfa(auth_manager)
 
     # Verify MFA
     await handle_mfa_verification(auth_manager, login_response)
+    
+    # linking authenticator app
+    
+    await associate_software_token(auth_manager, login_response)
 
 async def handle_registration(auth_manager):
     try:
@@ -68,14 +75,14 @@ async def handle_login(auth_manager):
 
 async def handle_token_refresh(auth_manager, login_response):
     try:
-        refreshed_tokens = await auth_manager.refresh_token(refresh_token=login_response["RefreshToken"])
+        refreshed_tokens = await auth_manager.refresh_token(refresh_token=login_response["refresh_token"])
         print("Refreshed Tokens:", refreshed_tokens)
     except Exception as e:
         print("Refresh Token Error:", str(e))
 
 async def handle_logout(auth_manager, login_response):
     try:
-        await auth_manager.logout_user(access_token=login_response["AccessToken"])
+        await auth_manager.logout_user(access_token=login_response["access_token"])
         print("Cognito User logged out successfully.")
     except Exception as e:
         print("Cognito Logout Error:", str(e))
@@ -125,13 +132,26 @@ async def handle_attribute_update(auth_manager, login_response):
         print("User Attributes Update Response:", update_response)
     except Exception as e:
         print("Update User Attributes Error:", str(e))
-
-async def handle_enable_mfa(auth_manager):
+        
+async def associate_software_token(auth_manager, login_response):
     try:
-        await auth_manager.enable_mfa(username="johndoe")
-        print("MFA enabled for johndoe.")
+        return await auth_manager.associate_software_token(access_token = login_response["access_token"])
     except Exception as e:
-        print("Enable MFA Error:", str(e))
+        print("Cognito Login Error:", str(e))
+
+async def handle_enable_totp_mfa(auth_manager):
+    try:
+        await auth_manager.enable_TOTP_mfa(username="johndoe")
+        print("TOTP MFA enabled for johndoe.")
+    except Exception as e:
+        print("Enable TOTP MFA Error:", str(e))
+
+async def handle_enable_sms_mfa(auth_manager):
+    try:
+        await auth_manager.enable_sms_mfa(username="johndoe")
+        print("SMS MFA enabled for johndoe.")
+    except Exception as e:
+        print("Enable SMS MFA Error:", str(e))
 
 async def handle_disable_mfa(auth_manager):
     try:

@@ -11,6 +11,7 @@ Generic robust authentication system built with FastAPI and Poetry.
 - Password reset functionality
 - Support for various databases SQL and NoSQL(mongoDB)
 - Caching with Redis
+- Support with authentication AWS Cognito.
 
 ## Installation
 
