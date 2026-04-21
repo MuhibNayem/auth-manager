@@ -1,17 +1,21 @@
 import os
-import hashlib
 import time
+from typing import Optional, Dict, Any
+import jwt
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.backends import default_backend
 from mailjet_rest import Client
 from authy_package.db.abstract_db import AbstractDatabase
 from authy_package.cache.abstract_cache import AbstractCache
 from passlib.context import CryptContext
+from authy_package.config import JWTConfig
 
-# Password hashing context using bcrypt
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing context supporting bcrypt and argon2
+pwd_context = CryptContext(schemes=["bcrypt", "argon2"], deprecated="auto")
 
 
 def hash_password(password: str) -> str:
-    """Hashes the given password using bcrypt."""
+    """Hashes the given password using bcrypt or argon2."""
     return pwd_context.hash(password)
 
 
@@ -20,9 +24,72 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
-def generate_reset_token() -> str:
-    """Generates a reset token using SHA256 and the current time."""
-    return hashlib.sha256(str(time.time()).encode()).hexdigest()
+class JWTTokenManager:
+    """
+    Secure JWT token generation and validation.
+    
+    Usage:
+        jwt_manager = JWTTokenManager(secret_key="your-secret-key")
+        token = jwt_manager.create_access_token(user_id="user123")
+        payload = jwt_manager.validate_token(token)
+    """
+    
+    def __init__(self, config: Optional[JWTConfig] = None, secret_key: Optional[str] = None):
+        if config:
+            self.secret_key = config.secret_key
+            self.algorithm = config.algorithm
+            self.access_token_expiration = config.access_token_expiration
+            self.refresh_token_expiration = config.refresh_token_expiration
+        else:
+            self.secret_key = secret_key or os.getenv("AUTHY_JWT_SECRET", "your-secret-key-change-in-production")
+            self.algorithm = "HS256"
+            self.access_token_expiration = 3600
+            self.refresh_token_expiration = 604800
+        
+        if self.secret_key == "your-secret-key-change-in-production":
+            raise ValueError("JWT secret key must be changed from default in production!")
+    
+    def create_access_token(self, user_identifier: str, additional_claims: Optional[Dict[str, Any]] = None) -> str:
+        """Create a JWT access token."""
+        now = int(time.time())
+        payload = {
+            "sub": user_identifier,
+            "iat": now,
+            "exp": now + self.access_token_expiration,
+            "type": "access",
+        }
+        if additional_claims:
+            payload.update(additional_claims)
+        
+        return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+    
+    def create_refresh_token(self, user_identifier: str) -> str:
+        """Create a JWT refresh token."""
+        now = int(time.time())
+        payload = {
+            "sub": user_identifier,
+            "iat": now,
+            "exp": now + self.refresh_token_expiration,
+            "type": "refresh",
+        }
+        return jwt.encode(payload, self.secret_key, algorithm=self.algorithm)
+    
+    def validate_token(self, token: str) -> Optional[Dict[str, Any]]:
+        """Validate a JWT token and return its payload if valid."""
+        try:
+            payload = jwt.decode(token, self.secret_key, algorithms=[self.algorithm])
+            return payload
+        except jwt.ExpiredSignatureError:
+            return None
+        except jwt.InvalidTokenError:
+            return None
+    
+    def create_token_pair(self, user_identifier: str) -> Dict[str, str]:
+        """Create both access and refresh tokens."""
+        return {
+            "access_token": self.create_access_token(user_identifier),
+            "refresh_token": self.create_refresh_token(user_identifier),
+        }
 
 
 class SecurityManager:

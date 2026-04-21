@@ -1,12 +1,30 @@
-import aioredis
+import redis.asyncio as redis
 import time
 import hashlib
+from typing import Optional, Dict, Any
 
 from authy_package.cache.abstract_cache import AbstractCache
 
+
 class RedisCaching(AbstractCache):
-    def __init__(self, cache_url: str, token_expiration_time: int = 3600, refresh_token_expiration_time: int = 604800, id_token_expiration_time:int = 3600):
-        self.redis = aioredis.from_url(cache_url)
+    """
+    Redis-based caching implementation for token storage.
+    
+    Features:
+    - Async Redis operations
+    - JWT and social token storage
+    - Automatic expiration
+    
+    Usage:
+        cache = RedisCaching(redis_url="redis://localhost:6379")
+        access_token, refresh_token = await cache.create_token_pair("user123")
+    """
+    
+    def __init__(self, redis_url: str = "redis://localhost:6379", 
+                 token_expiration_time: int = 3600, 
+                 refresh_token_expiration_time: int = 604800, 
+                 id_token_expiration_time: int = 3600):
+        self.redis = redis.from_url(redis_url)
         self.TOKEN_EXPIRATION_TIME = token_expiration_time
         self.REFRESH_TOKEN_EXPIRATION_TIME = refresh_token_expiration_time
         self.ID_TOKEN_EXPIRATION_TIME = id_token_expiration_time
