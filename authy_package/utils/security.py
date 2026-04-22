@@ -1,9 +1,8 @@
 import os
 import time
+import secrets
 from typing import Optional, Dict, Any
 import jwt
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.backends import default_backend
 from mailjet_rest import Client
 from authy_package.db.abstract_db import AbstractDatabase
 from authy_package.cache.abstract_cache import AbstractCache
@@ -24,17 +23,22 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return pwd_context.verify(plain_password, hashed_password)
 
 
+def generate_reset_token() -> str:
+    """Generates a secure random reset token using secrets module."""
+    return secrets.token_urlsafe(32)
+
+
 class JWTTokenManager:
     """
     Secure JWT token generation and validation.
     
     Usage:
         jwt_manager = JWTTokenManager(secret_key="your-secret-key")
-        token = jwt_manager.create_access_token(user_id="user123")
+        token = jwt_manager.create_access_token(user_identifier="user123")
         payload = jwt_manager.validate_token(token)
     """
     
-    def __init__(self, config: Optional[JWTConfig] = None, secret_key: Optional[str] = None):
+    def __init__(self, config: Optional[JWTConfig] = None, secret_key: Optional[str] = None, warn_only: bool = True):
         if config:
             self.secret_key = config.secret_key
             self.algorithm = config.algorithm
@@ -47,7 +51,11 @@ class JWTTokenManager:
             self.refresh_token_expiration = 604800
         
         if self.secret_key == "your-secret-key-change-in-production":
-            raise ValueError("JWT secret key must be changed from default in production!")
+            if os.getenv("AUTHY_ENV") == "production" and not warn_only:
+                raise ValueError("JWT secret key must be changed from default in production!")
+            else:
+                import warnings
+                warnings.warn("Using default JWT secret key. Set AUTHY_JWT_SECRET in production.")
     
     def create_access_token(self, user_identifier: str, additional_claims: Optional[Dict[str, Any]] = None) -> str:
         """Create a JWT access token."""

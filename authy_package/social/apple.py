@@ -1,9 +1,11 @@
 import aiohttp
 import jwt
 import time
+import json
 from typing import Optional, Dict, Any
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.backends import default_backend
+from jwt.algorithms import RSAAlgorithm
 
 
 class AppleManager:
@@ -30,7 +32,7 @@ class AppleManager:
         self._jwks_cache = None
         self._jwks_cache_time = 0
 
-    def get_authorization_url(self, redirect_uri: str, scope: str = "openid email profile", state: str = None) -> str:
+    def get_authorization_url(self, redirect_uri: str, scope: str = "openid email profile", state: Optional[str] = None) -> str:
         """Generates the authorization URL for Apple Sign-In."""
         import urllib.parse
         url = "https://appleid.apple.com/auth/oauth2/v2/authorize"
@@ -129,26 +131,15 @@ class AppleManager:
         if not matching_key:
             raise ValueError("No matching public key found for token")
         
-        # Convert JWK to PEM format
-        from cryptography.hazmat.primitives.asymmetric.rsa import RSAPublicNumbers
-        from cryptography.hazmat.primitives import serialization
-        
-        n = int.from_bytes(bytes.fromhex(matching_key['n']), 'big')
-        e = int.from_bytes(bytes.fromhex(matching_key['e']), 'big')
-        
-        public_numbers = RSAPublicNumbers(e=e, n=n)
-        public_key = public_numbers.public_key(default_backend())
-        pem_key = public_key.public_bytes(
-            encoding=serialization.Encoding.PEM,
-            format=serialization.PublicFormat.SubjectPublicKeyInfo
-        )
+        # Convert JWK to a public key using PyJWT's JWK support (handles base64url correctly)
+        public_key = RSAAlgorithm.from_jwk(json.dumps(matching_key))
         
         # Verify and decode token
         try:
             decoded_token = jwt.decode(
                 id_token,
-                key=pem_key,
-                algorithms=['RS256'],
+                key=public_key,
+                algorithms=["RS256"],
                 audience=self.client_id,
                 issuer='https://appleid.apple.com'
             )
