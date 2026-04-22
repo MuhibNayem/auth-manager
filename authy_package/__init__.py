@@ -30,7 +30,9 @@ __version__ = "2.0.0"
 __author__ = "Authy Team"
 
 from .config import AuthConfig
-from .core.auth_manager import AuthManager
+# Core auth managers - using existing classes
+from .core.auth_manager import TraditionalAuthManager as AuthManager
+from .core.auth_manager import CognitoAuthManager, SocialAuthManager
 from .sessions.session_manager import SessionManager
 from .passwordless.magic_link import MagicLinkManager
 from .passwordless.passkey import PasskeyManager

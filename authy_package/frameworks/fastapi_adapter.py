@@ -67,7 +67,7 @@ class FastAPIAuth:
     
     async def require_auth(
         self,
-        credentials: Optional[HTTPAuthorizationCredentials] = Depends(self.security)
+        credentials: Optional[HTTPAuthorizationCredentials] = None
     ) -> dict:
         """Require authentication - raises 401 if not authenticated"""
         if not credentials:
