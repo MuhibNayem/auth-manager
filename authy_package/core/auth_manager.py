@@ -499,8 +499,8 @@ class SocialAuthManager:
         """
 
         if code is None:
-            # If no code is provided, return the authorization URL
-            authorization_url = await self.apple_manager.get_authorization_url(redirect_uri)
+            # If no code is provided, return the authorization URL (sync method)
+            authorization_url = self.apple_manager.get_authorization_url(redirect_uri)
             return {"authorization_url": authorization_url}
 
         # Exchange code for access token and user information
