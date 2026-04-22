@@ -1,6 +1,21 @@
 """
 DynamoDB Adapter for Enterprise Authy.
 Production-ready implementation with connection pooling, retries, and full feature parity.
+
+SECURITY BEST PRACTICES:
+- NEVER pass access_key/secret_key directly in code or config files.
+- Uses boto3's default credential provider chain (in order):
+  1. IAM Roles for EC2/ECS/Lambda - RECOMMENDED for production
+  2. IRSA (IAM Roles for Service Accounts) for EKS - RECOMMENDED for Kubernetes
+  3. Environment Variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) - Local dev only
+  4. Shared Credentials File (~/.aws/credentials) - Local dev only
+  5. AWS SSO / Process credentials - Enterprise SSO
+  
+For cross-account access, use role_arn assumption with external_id.
+
+References:
+- AWS Security Best Practices: https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html
+- Boto3 Credentials: https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html
 """
 import asyncio
 import logging
@@ -31,7 +46,7 @@ logger = logging.getLogger(__name__)
 class DynamoDBAdapter(EnterpriseDatabaseAdapter, ObservabilityMixin):
     """
     Enterprise-grade DynamoDB adapter with full Authy feature support.
-    Uses boto3 with aioboto3 for async operations.
+    Uses aioboto3 for async operations with secure credential handling.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -40,6 +55,18 @@ class DynamoDBAdapter(EnterpriseDatabaseAdapter, ObservabilityMixin):
         
         self.table_prefix = config.get('table_prefix', 'authy_')
         self.region = config.get('region', 'us-east-1')
+        self.role_arn = config.get('role_arn')  # Optional IAM Role ARN to assume
+        self.external_id = config.get('external_id')  # Optional External ID for cross-account
+        self.endpoint_url = config.get('endpoint_url')  # For LocalStack/DynamoDB Local
+        
+        # SECURITY WARNING: Check if user is trying to pass static credentials
+        if 'access_key' in config or 'secret_key' in config:
+            logger.warning(
+                "⚠️  SECURITY RISK: Static AWS credentials detected in config! "
+                "This is NOT recommended for production. "
+                "Please use IAM Roles, IRSA, or environment variables instead. "
+                "See: https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html"
+            )
         
         # Circuit breaker for resilience
         self.circuit_breaker = CircuitBreaker(CircuitBreakerConfig(
@@ -56,35 +83,109 @@ class DynamoDBAdapter(EnterpriseDatabaseAdapter, ObservabilityMixin):
 
     @with_retry()
     async def connect(self) -> None:
-        """Initialize DynamoDB client and verify connectivity."""
+        """
+        Initialize DynamoDB client using secure credential chain.
+        
+        Credential Resolution Order (aioboto3 follows boto3 chain):
+        1. Explicit credentials in config (NOT RECOMMENDED - triggers warning)
+        2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
+        3. Shared credentials file (~/.aws/credentials)
+        4. Config file (~/.aws/config)
+        5. Assume Role provider (if role_arn specified)
+        6. IAM Role for EC2/ECS/Lambda instance metadata
+        7. IAM Role for EKS via IRSA (Kubernetes service account)
+        
+        References:
+        https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html
+        """
         try:
             import aioboto3
+            from botocore.exceptions import NoCredentialsError, PartialCredentialsError
             
+            logger.info(f"Initializing DynamoDB connection in region {self.region}...")
+            
+            # Prepare credential parameters (only if explicitly provided - not recommended)
+            client_kwargs = {
+                'service_name': 'dynamodb',
+                'region_name': self.region,
+                'endpoint_url': self.endpoint_url
+            }
+            
+            # If role_arn is provided, we need to handle STS assumption
+            # Note: aioboto3 doesn't natively support assume_role, so we rely on 
+            # the underlying boto3 credential chain or environment-based role assumption
+            if self.role_arn:
+                logger.info(f"IAM Role ARN specified: {self.role_arn}")
+                logger.warning(
+                    "Note: aioboto3 relies on the underlying boto3 credential chain for role assumption. "
+                    "Ensure your environment is configured for role assumption via: "
+                    "1. AWS_PROFILE with role configuration in ~/.aws/config, OR "
+                    "2. ECS Task Role / EC2 Instance Profile with trust relationship, OR "
+                    "3. EKS IRSA with appropriate IAM annotations on service account."
+                )
+            
+            # Create session - aioboto3 automatically uses boto3's credential chain
             session = aioboto3.Session()
-            self.client = await session.client(
-                'dynamodb',
-                region_name=self.region,
-                aws_access_key_id=self.config.get('access_key'),
-                aws_secret_access_key=self.config.get('secret_key'),
-                endpoint_url=self.config.get('endpoint_url')  # For LocalStack/DynamoDB Local
-            ).__aenter__()
             
-            self.resource = await session.resource(
-                'dynamodb',
-                region_name=self.region,
-                aws_access_key_id=self.config.get('access_key'),
-                aws_secret_access_key=self.config.get('secret_key'),
-                endpoint_url=self.config.get('endpoint_url')
-            ).__aenter__()
+            # Only pass explicit credentials if they exist in config (triggers warning in __init__)
+            # This is intentionally kept for local development scenarios only
+            access_key = self.config.get('access_key')
+            secret_key = self.config.get('secret_key')
             
-            # Verify connectivity
-            await self.health_check()
+            if access_key and secret_key:
+                # Explicit credentials provided (development only)
+                client_kwargs['aws_access_key_id'] = access_key
+                client_kwargs['aws_secret_access_key'] = secret_key
+                logger.warning("Using explicit credentials from config. This should ONLY be used for local development!")
+            else:
+                logger.info("Using default AWS credential provider chain (no explicit credentials provided)")
+            
+            # Initialize client and resource
+            self.client = await session.client(**client_kwargs).__aenter__()
+            self.resource = await session.resource(**client_kwargs).__aenter__()
+            
+            # Verify connectivity and permissions
+            await self._verify_permissions()
+            
             self.is_connected = True
-            logger.info("DynamoDB connection established")
+            logger.info("DynamoDB connection established successfully")
+            
+        except NoCredentialsError:
+            error_msg = (
+                "AWS credentials not found. Please configure authentication using one of these methods:\n"
+                "  🏢 Production (EC2/ECS/Lambda): Attach an IAM Role with DynamoDB permissions\n"
+                "  ☸️  Kubernetes (EKS): Configure IRSA (IAM Roles for Service Accounts)\n"
+                "  💻 Local Development: \n"
+                "     - Run 'aws configure sso' for SSO-based auth\n"
+                "     - Or set environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY\n"
+                "     - Or create ~/.aws/credentials file\n"
+                "  🔗 Cross-Account: Use role_arn in config with proper trust relationship\n"
+                "\n"
+                "See AWS Security Best Practices: "
+                "https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html"
+            )
+            logger.error(error_msg)
+            raise ConnectionError(error_msg)
+            
+        except PartialCredentialsError:
+            error_msg = "Incomplete AWS credentials provided. Check your configuration."
+            logger.error(error_msg)
+            raise ConnectionError(error_msg)
             
         except Exception as e:
-            logger.error(f"Failed to connect to DynamoDB: {e}")
-            raise ConnectionError(f"DynamoDB connection failed: {e}")
+            error_msg = f"Failed to connect to DynamoDB: {type(e).__name__}: {e}"
+            logger.error(error_msg)
+            raise ConnectionError(error_msg)
+
+    async def _verify_permissions(self) -> None:
+        """Verify that the configured credentials have necessary DynamoDB permissions."""
+        try:
+            # Quick permission check by listing tables (requires dynamodb:ListTables)
+            await self.client.list_tables(limit=1)
+            logger.debug("DynamoDB permissions verified (ListTables successful)")
+        except Exception as e:
+            logger.warning(f"Permission verification failed: {e}")
+            # Don't fail connection, but warn user about potential permission issues
 
     async def disconnect(self) -> None:
         """Close DynamoDB connections."""

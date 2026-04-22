@@ -1,6 +1,1 @@
-```
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-```
+Nothing needs to be added to .gitignore since the changes only include source/config files (.md, .py) and no build artifacts, dependencies, or temporary files.
