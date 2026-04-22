@@ -196,13 +196,16 @@ class SQLDatabase(AbstractDatabase):
         async with self.session_factory() as session:
             async with session.begin():
                 from sqlalchemy import text
+                insert_data = dict(provider_data)
+                if 'client_secret' in insert_data and 'client_secret_encrypted' not in insert_data:
+                    insert_data['client_secret_encrypted'] = insert_data.pop('client_secret')
                 result = await session.execute(
                     text("""
-                        INSERT INTO oidc_providers (provider_id, issuer, client_id, client_secret, config_json, created_at)
-                        VALUES (:provider_id, :issuer, :client_id, :client_secret, :config_json, NOW())
+                        INSERT INTO oidc_providers (provider_id, issuer, client_id, client_secret_encrypted, config_json, created_at)
+                        VALUES (:provider_id, :issuer, :client_id, :client_secret_encrypted, :config_json, NOW())
                         RETURNING provider_id
                     """),
-                    provider_data
+                    insert_data
                 )
                 row = result.fetchone()
                 return str(row[0]) if row else None
@@ -220,6 +223,8 @@ class SQLDatabase(AbstractDatabase):
 
     async def update_oidc_provider(self, provider_id: str, update_data: dict) -> bool:
         """Update an OIDC provider."""
+        if not update_data:
+            return False
         async with self.session_factory() as session:
             async with session.begin():
                 from sqlalchemy import text

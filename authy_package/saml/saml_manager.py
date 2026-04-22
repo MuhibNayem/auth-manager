@@ -18,6 +18,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from urllib.parse import urlencode, urlparse
 import xmlsec
 from lxml import etree
+from cryptography import x509
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.hazmat.backends import default_backend
@@ -94,8 +95,12 @@ class SAMLConfig:
         """Load X.509 certificate from file."""
         with open(path, 'rb') as f:
             cert_data = f.read()
-        return serialization.load_pem_x509_certificate(cert_data, backend=default_backend())
-    
+        return x509.load_pem_x509_certificate(cert_data, backend=default_backend())
+
+    def _load_certificate_from_pem(self, pem_str: str) -> Any:
+        """Load X.509 certificate from a PEM string."""
+        return x509.load_pem_x509_certificate(pem_str.encode(), backend=default_backend())
+
     def _load_private_key(self, path: str) -> Any:
         """Load RSA private key from file."""
         with open(path, 'rb') as f:
@@ -143,7 +148,7 @@ class SAMLManager:
         
         sp_sso_descriptor = ET.SubElement(root, 'md:SPSSODescriptor', {
             'protocolSupportEnumeration': 'urn:oasis:names:tc:SAML:2.0:protocol',
-            'AuthnRequestsSigned': 'true',
+            'AuthnRequestsSigned': 'false',
             'WantAssertionsSigned': 'true',
         })
         
@@ -171,8 +176,8 @@ class SAMLManager:
             key_info = ET.SubElement(key_descriptor, 'ds:KeyInfo', {'xmlns:ds': 'http://www.w3.org/2000/09/xmldsig#'})
             x509_data = ET.SubElement(key_info, 'ds:X509Data')
             x509_cert = ET.SubElement(x509_data, 'ds:X509Certificate')
-            cert_bytes = self.config.sp_certificate.public_bytes(serialization.Encoding.PEM)
-            x509_cert.text = base64.b64encode(cert_bytes).decode('utf-8').replace('-----BEGIN CERTIFICATE-----', '').replace('-----END CERTIFICATE-----', '')
+            cert_bytes = self.config.sp_certificate.public_bytes(serialization.Encoding.DER)
+            x509_cert.text = base64.b64encode(cert_bytes).decode('utf-8')
         
         # Pretty print XML
         xml_str = ET.tostring(root, encoding='unicode')
@@ -202,10 +207,23 @@ class SAMLManager:
     
     def _parse_idp_metadata(self, metadata_xml: str) -> Dict[str, Any]:
         """Parse IdP metadata XML into configuration dict."""
-        root = etree.fromstring(metadata_xml.encode())
-        ns = {'md': 'urn:oasis:names:tc:SAML:2.0:metadata'}
-        
-        entity_descriptor = root.find('.//md:EntityDescriptor', namespaces=ns)
+        parser = etree.XMLParser(
+            resolve_entities=False,
+            no_network=True,
+            load_dtd=False,
+        )
+        root = etree.fromstring(metadata_xml.encode(), parser=parser)
+        ns = {
+            'md': 'urn:oasis:names:tc:SAML:2.0:metadata',
+            'ds': 'http://www.w3.org/2000/09/xmldsig#',
+        }
+
+        # The root may itself be EntityDescriptor, or it may be EntitiesDescriptor
+        md_ns = 'urn:oasis:names:tc:SAML:2.0:metadata'
+        if root.tag == f'{{{md_ns}}}EntityDescriptor':
+            entity_descriptor = root
+        else:
+            entity_descriptor = root.find('.//md:EntityDescriptor', namespaces=ns)
         if entity_descriptor is None:
             raise ValueError("Invalid IdP metadata: no EntityDescriptor found")
         
@@ -247,6 +265,9 @@ class SAMLManager:
         Returns:
             Tuple of (redirect_url, request_id)
         """
+        if not self.config.idp_sso_url:
+            raise ValueError("IdP SSO URL is not configured. Set idp_sso_url in SAMLConfig.")
+
         request_id = f"_request_{secrets.token_hex(16)}"
         now = datetime.utcnow()
         
@@ -286,9 +307,10 @@ class SAMLManager:
         # Convert to XML string
         xml_str = ET.tostring(root, encoding='unicode')
         
-        # Deflate and base64 encode
+        # Deflate and base64 encode using raw DEFLATE for HTTP-Redirect binding
         import zlib
-        deflated = zlib.compress(xml_str.encode('utf-8'), -15)[2:-4]
+        compressor = zlib.compressobj(wbits=-15)
+        deflated = compressor.compress(xml_str.encode('utf-8')) + compressor.flush()
         encoded = base64.b64encode(deflated).decode('utf-8')
         
         # Build redirect URL
@@ -327,18 +349,55 @@ class SAMLManager:
         except Exception as e:
             raise ValueError(f"Invalid base64 encoding: {e}")
         
-        # Parse XML
+        # Parse XML with a hardened parser to prevent XXE/entity expansion attacks
         try:
-            root = etree.fromstring(decoded_xml.encode())
+            parser = etree.XMLParser(
+                resolve_entities=False,
+                no_network=True,
+                load_dtd=False,
+                huge_tree=False,
+            )
+            root = etree.fromstring(decoded_xml.encode('utf-8'), parser=parser)
         except Exception as e:
             raise ValueError(f"Invalid XML: {e}")
         
-        # Verify signature
-        if self.config.idp_certificate:
-            self._verify_signature(root, self.config.idp_certificate)
+        # Require signature verification for all SAML responses
+        if not self.config.idp_certificate:
+            raise ValueError("SAML response validation requires an IdP certificate")
+        self._verify_signature(root, self.config.idp_certificate)
         
         # Extract and validate response
         response_data = self._parse_response(root)
+        
+        # Validate Destination matches this SP's ACS URL
+        destination = root.get('Destination')
+        if destination and destination != self.config.acs_url:
+            raise ValueError("Invalid SAML response destination")
+        
+        # Validate AudienceRestriction contains this SP's entity ID
+        ns = {
+            'saml': 'urn:oasis:names:tc:SAML:2.0:assertion',
+        }
+        audiences = root.xpath(
+            './/saml:AudienceRestriction/saml:Audience/text()',
+            namespaces=ns,
+        )
+        if audiences and self.config.sp_entity_id not in audiences:
+            raise ValueError("Invalid SAML audience")
+        
+        # Validate InResponseTo against an outstanding AuthnRequest
+        in_response_to = response_data.get('in_response_to')
+        if not in_response_to:
+            raise ValueError("Missing InResponseTo in SAML response")
+        expected_request_id = None
+        if self.cache:
+            cached = self.cache.get(f"saml:request:{in_response_to}")
+            if cached:
+                expected_request_id = in_response_to
+        if expected_request_id is None:
+            raise ValueError(
+                "SAML response InResponseTo does not match any outstanding AuthnRequest"
+            )
         
         # Validate conditions
         self._validate_conditions(response_data['conditions'])
@@ -350,10 +409,10 @@ class SAMLManager:
         attributes = self._extract_attributes(root)
         
         # Create or update user (JIT provisioning)
-        user = await self._provision_user(attributes)
+        user = await self._provision_user(attributes, response_data['subject'])
         
         # Store session
-        session_id = await self._create_saml_session(response_data, relay_state)
+        session_id = await self._create_saml_session(response_data, relay_state, in_response_to)
         
         return {
             'user': user,
@@ -422,12 +481,12 @@ class SAMLManager:
         # Get subject
         subject_elem = assertion.find('saml:Subject', namespaces=ns)
         name_id_elem = subject_elem.find('saml:NameID', namespaces=ns) if subject_elem is not None else None
-        session_index_elem = subject_elem.find('saml:SubjectConfirmation/saml:SubjectConfirmationData', namespaces=ns)
+        authn_statement_elem = assertion.find('saml:AuthnStatement', namespaces=ns)
         
         subject = {
             'name_id': name_id_elem.text if name_id_elem is not None else None,
             'name_id_format': name_id_elem.get('Format') if name_id_elem is not None else None,
-            'session_index': session_index_elem.get('SessionIndex') if session_index_elem is not None else None,
+            'session_index': authn_statement_elem.get('SessionIndex') if authn_statement_elem is not None else None,
         }
         
         return {
@@ -483,10 +542,11 @@ class SAMLManager:
         
         return attributes
     
-    async def _provision_user(self, attributes: Dict[str, Any]) -> Dict[str, Any]:
+    async def _provision_user(self, attributes: Dict[str, Any], subject: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Just-in-Time user provisioning."""
         # Try to find existing user by email or name_id
         email = attributes.get('email') or attributes.get('mail') or attributes.get('EmailAddress')
+        name_id = (subject or {}).get('name_id') if subject else None
         
         if email:
             user = await self.db.get_user_by_identifier(email=email)
@@ -497,15 +557,23 @@ class SAMLManager:
         if not self.config.allow_create:
             raise ValueError("User does not exist and JIT provisioning is disabled")
         
+        # Derive username safely without depending on email being non-None
+        username = (
+            attributes.get('uid')
+            or attributes.get('username')
+            or (email.split('@')[0] if email else None)
+            or name_id
+        )
+        
         # Build user data from attributes
         user_data = {
             'email': email,
-            'username': attributes.get('uid') or attributes.get('username') or email.split('@')[0],
+            'username': username,
             'full_name': attributes.get('displayName') or attributes.get('cn') or attributes.get('fullName'),
             'first_name': attributes.get('givenName') or attributes.get('firstName'),
             'last_name': attributes.get('sn') or attributes.get('lastName'),
             'phone': attributes.get('mobile') or attributes.get('telephoneNumber'),
-            'saml_subject': attributes.get('name_id'),
+            'saml_subject': name_id,
             'idp_entity_id': self.config.idp_entity_id,
             'auth_method': 'saml',
         }
@@ -517,15 +585,19 @@ class SAMLManager:
         await self.db.create_user(user_data)
         
         # Fetch created user
-        return await self.db.get_user_by_identifier(email=email)
+        if email:
+            return await self.db.get_user_by_identifier(email=email)
+        if username:
+            return await self.db.get_user_by_identifier(username=username)
+        return user_data
     
-    async def _create_saml_session(self, response_data: Dict[str, Any], relay_state: Optional[str]) -> str:
+    async def _create_saml_session(self, response_data: Dict[str, Any], relay_state: Optional[str], request_id: Optional[str] = None) -> str:
         """Create session record for SAML authentication."""
         session_id = f"saml_session_{secrets.token_hex(32)}"
         
         session_data = {
             'session_id': session_id,
-            'saml_response_id': response_data['response_id'],
+            'request_id': request_id or response_data.get('in_response_to'),
             'name_id': response_data['subject']['name_id'],
             'session_index': response_data['subject']['session_index'],
             'idp_entity_id': response_data['issuer'],
@@ -552,6 +624,9 @@ class SAMLManager:
         Returns:
             Redirect URL for logout request
         """
+        if not self.config.idp_slo_url:
+            raise ValueError("IdP SLO URL is not configured. Set idp_slo_url in SAMLConfig.")
+
         request_id = f"_logout_request_{secrets.token_hex(16)}"
         now = datetime.utcnow()
         
@@ -577,9 +652,10 @@ class SAMLManager:
         
         xml_str = ET.tostring(root, encoding='unicode')
         
-        # Deflate and encode
+        # Deflate and encode using raw DEFLATE for HTTP-Redirect binding
         import zlib
-        deflated = zlib.compress(xml_str.encode('utf-8'), -15)[2:-4]
+        compressor = zlib.compressobj(wbits=-15)
+        deflated = compressor.compress(xml_str.encode('utf-8')) + compressor.flush()
         encoded = base64.b64encode(deflated).decode('utf-8')
         
         return f"{self.config.idp_slo_url}?{urlencode({'SAMLRequest': encoded})}"
@@ -595,7 +671,17 @@ class SAMLManager:
             True if logout was successful
         """
         decoded_xml = base64.b64decode(saml_response).decode('utf-8')
-        root = etree.fromstring(decoded_xml.encode())
+        parser = etree.XMLParser(
+            resolve_entities=False,
+            no_network=True,
+            load_dtd=False,
+            huge_tree=False,
+        )
+        root = etree.fromstring(decoded_xml.encode('utf-8'), parser=parser)
+        
+        # Verify signature if IdP certificate is configured
+        if self.config.idp_certificate:
+            self._verify_signature(root, self.config.idp_certificate)
         
         ns = {'samlp': 'urn:oasis:names:tc:SAML:2.0:protocol'}
         status = root.find('.//samlp:Status/samlp:StatusCode', namespaces=ns)

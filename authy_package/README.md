@@ -115,12 +115,14 @@ psql -d your_database -f authy_package/migration/saml_oidc_tables.sql
 
 ### Security Features
 
-✅ XML signature validation (SAML)  
 ✅ JWT signature validation (OIDC)  
 ✅ Clock skew tolerance  
-✅ Audience/issuer validation  
-✅ Replay attack prevention  
-✅ CSRF protection via state parameter  
+✅ Audience/issuer validation where configured/supported  
+✅ CSRF protection via state parameter (OIDC)  
 ✅ PKCE support (OIDC)  
 ✅ JIT user provisioning  
 ✅ Attribute mapping  
+
+**SAML notes**
+- XML signature validation is enforced when an IdP signing certificate is configured (required for `validate_response`).
+- Ensure your SAML deployment validates request/response correlation (`InResponseTo`) and other anti-replay controls if required by your threat model.

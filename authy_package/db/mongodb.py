@@ -13,6 +13,9 @@ class MongoDB(AbstractDatabase):
         self.client = AsyncIOMotorClient(db_url)
         self.db = self.client[db_name]
         self.collection = self.db[collection_name]
+        self.saml_providers = self.db['saml_providers']
+        self.saml_sessions = self.db['saml_sessions']
+        self.oidc_providers = self.db['oidc_providers']
 
     async def create_user(self, user_data: dict):
         """
@@ -102,12 +105,12 @@ class MongoDB(AbstractDatabase):
         """Create a SAML provider configuration."""
         from datetime import datetime
         provider_data['created_at'] = datetime.utcnow()
-        result = await self.collection.insert_one(provider_data)
+        result = await self.saml_providers.insert_one(provider_data)
         return str(result.inserted_id)
 
     async def get_saml_provider_by_entity_id(self, entity_id: str):
         """Get a SAML provider by Entity ID."""
-        return await self.collection.find_one({"entity_id": entity_id})
+        return await self.saml_providers.find_one({"entity_id": entity_id})
 
     async def create_saml_session(self, session_data: dict) -> str:
         """Create a SAML session."""
@@ -127,7 +130,7 @@ class MongoDB(AbstractDatabase):
 
     async def delete_saml_provider(self, entity_id: str) -> bool:
         """Delete a SAML provider."""
-        result = await self.collection.delete_one({"entity_id": entity_id})
+        result = await self.saml_providers.delete_one({"entity_id": entity_id})
         return result.deleted_count > 0
 
     async def create_oidc_provider(self, provider_data: dict) -> str:

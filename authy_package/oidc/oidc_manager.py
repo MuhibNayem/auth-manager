@@ -210,6 +210,13 @@ class OIDCManager:
         else:
             code_challenge = None
         
+        if not self.config.authorization_endpoint:
+            raise ValueError(
+                "OIDC authorization endpoint is not configured. "
+                "Run provider discovery or set authorization_endpoint before "
+                "calling create_authorization_url()."
+            )
+
         # Build authorization URL parameters
         params = {
             'client_id': self.config.client_id,
@@ -291,6 +298,12 @@ class OIDCManager:
             token_data['code_verifier'] = code_verifier
         
         # Make token request
+        if not self.config.token_endpoint:
+            raise ValueError(
+                "OIDC token endpoint is not configured. "
+                "Run provider discovery or set token_endpoint before "
+                "calling exchange_code_for_tokens()."
+            )
         import aiohttp
         async with aiohttp.ClientSession() as session:
             async with session.post(self.config.token_endpoint, data=token_data) as response:
@@ -563,19 +576,9 @@ class OIDCManager:
         user = await self.db.get_user_by_identifier(email=email)
         
         if user:
-            # Update user info
-            update_data = {
-                'full_name': user_info.get('name'),
-                'given_name': user_info.get('given_name'),
-                'family_name': user_info.get('family_name'),
-                'picture': user_info.get('picture'),
-                'locale': user_info.get('locale'),
-                'oidc_subject': user_info.get('sub'),
-                'auth_method': 'oidc',
-            }
-            # Filter out None values and update
-            update_data = {k: v for k, v in update_data.items() if v is not None}
-            # Note: You may want to add an update_user method to your DB interface
+            # Existing users are returned as-is. Persisted profile updates would
+            # require a DB update method, which is not part of the interface used
+            # in this implementation.
             return user
         
         # Create new user
