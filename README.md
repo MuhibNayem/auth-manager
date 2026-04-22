@@ -18,12 +18,26 @@ pip install authy-package
 import asyncio
 from authy_package.core.auth_manager import TraditionalAuthManager
 from authy_package.db.sql import SQLDatabase
+# For MongoDB: from authy_package.db.mongodb import MongoDBDatabase
+# For DynamoDB: from authy_package.db.dynamodb_adapter import DynamoDBAdapter
 from authy_package.cache.redis_cache import RedisCaching
 from authy_package.mfa.mfa_setup import MFAAuthManager
 from authy_package.utils.security import SecurityManager
 
 # Initialize components
+# SQL Database
 db = SQLDatabase("postgresql+asyncpg://user:pass@localhost/dbname")
+
+# MongoDB Alternative
+# db = MongoDBDatabase("mongodb://localhost:27017", "authy_db")
+
+# DynamoDB Alternative (Uses IAM Roles - NO credentials in code!)
+# db = DynamoDBAdapter({
+#     'region': 'us-east-1',
+#     'table_prefix': 'prod_authy_'
+#     # Credentials automatically resolved from IAM Role / IRSA / Environment
+# })
+
 cache = RedisCaching("redis://localhost:6379")
 mfa = MFAAuthManager(db=db)
 security = SecurityManager(db=db, cache=cache, api_key="mailjet_key", api_secret="mailjet_secret")
@@ -41,6 +55,8 @@ async def main():
 
 asyncio.run(main())
 ```
+
+⚠️ **Security Note for DynamoDB**: Never hardcode AWS credentials! The package follows AWS best practices by using the credential provider chain (IAM Roles → Environment → Config files). See [AWS_SECURITY_GUIDE.md](./AWS_SECURITY_GUIDE.md) for details.
 
 ### Using Configuration Class
 
@@ -485,10 +501,19 @@ user_info = await github.get_user_info(access_token=tokens["access_token"])
 
 ```env
 # Database (Required)
-AUTHY_DB_TYPE=sql                          # "sql" or "mongodb"
+AUTHY_DB_TYPE=sql                          # "sql", "mongodb", or "dynamodb"
 AUTHY_DB_URL=postgresql+asyncpg://user:pass@localhost:5432/authy
 AUTHY_DB_NAME=authy                        # For MongoDB
 AUTHY_DB_COLLECTION=users                  # For MongoDB
+
+# AWS DynamoDB (Alternative to SQL/MongoDB)
+# ⚠️ SECURITY: Never set these directly! Use IAM Roles instead.
+# See AWS_SECURITY_GUIDE.md for secure credential management
+AWS_REGION=us-east-1                       # Required for DynamoDB
+# AWS_ACCESS_KEY_ID=...                   # ❌ NOT RECOMMENDED - Use IAM Role
+# AWS_SECRET_ACCESS_KEY=...               # ❌ NOT RECOMMENDED - Use IAM Role
+AUTHY_DYNAMODB_TABLE_PREFIX=prod_authy_    # Prefix for all table names
+AUTHY_DYNAMODB_ROLE_ARN=arn:aws:iam::...   # Optional: Cross-account role
 
 # Cache/Redis (Required for JWT tokens)
 AUTHY_CACHE_ENABLED=true
@@ -535,6 +560,22 @@ AUTHY_COGNITO_ENABLED=false
 AWS_REGION=us-east-1
 COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
 COGNITO_APP_CLIENT_ID=xxxxxxxxxxxxxxxxxxxx
+
+# SAML 2.0 (Enterprise SSO)
+AUTHY_SAML_ENABLED=false
+SAML_SP_ENTITY_ID=https://myapp.com/saml/metadata
+SAML_ACS_URL=https://myapp.com/saml/acs
+SAML_SLO_URL=https://myapp.com/saml/slo
+SAML_IDP_METADATA_URL=https://idp.example.com/metadata
+SAML_IDP_CERTIFICATE=-----BEGIN CERTIFICATE-----...
+
+# OpenID Connect (Enterprise SSO)
+AUTHY_OIDC_ENABLED=false
+OIDC_ISSUER=https://accounts.google.com
+OIDC_CLIENT_ID=xxx
+OIDC_CLIENT_SECRET=xxx
+OIDC_REDIRECT_URI=https://myapp.com/auth/oidc/callback
+OIDC_SCOPES=openid,email,profile
 
 # Audit Logging
 AUTHY_AUDIT_LOG_RETENTION_DAYS=365
@@ -704,6 +745,7 @@ See `/examples` directory for complete integration examples:
 ┌─────────────────────────────────────────────────────────────┐
 │                    Core Auth Managers                        │
 │  TraditionalAuthManager | CognitoAuthManager | SocialAuth   │
+│  SAMLManager | OIDCManager                                  │
 └─────────────────────────────────────────────────────────────┘
                               │
           ┌───────────────────┼───────────────────┐
@@ -719,9 +761,27 @@ See `/examples` directory for complete integration examples:
                               ▼
 ┌─────────────────────────────────────────────────────────────┐
 │                  Data & Cache Layer                          │
-│         PostgreSQL | MongoDB | Redis | Memory               │
+│   PostgreSQL | MySQL | SQLite | MongoDB | DynamoDB | Redis  │
+│                                                              │
+│   Database Agnostic Interface:                               │
+│   - SQLDatabase (SQLAlchemy)                                │
+│   - MongoDBDatabase (Motor)                                 │
+│   - DynamoDBAdapter (aioboto3)                              │
+│   - Custom adapters via AbstractDatabase                    │
 └─────────────────────────────────────────────────────────────┘
 ```
+
+### Database Support Matrix
+
+| Database | Status | Use Case | Credentials |
+|----------|--------|----------|-------------|
+| **PostgreSQL/MySQL/SQLite** | ✅ Production | General purpose | Connection string |
+| **MongoDB** | ✅ Production | Document-based, scalable | Connection string |
+| **DynamoDB** | ✅ Production | Serverless, AWS-native | IAM Roles (no secrets!) |
+| **Cassandra** | 🔧 Template | High write throughput | Custom implementation |
+| **Redis** | 🔧 Template | Session/cache only | Custom implementation |
+
+See [AWS_SECURITY_GUIDE.md](./AWS_SECURITY_GUIDE.md) for secure AWS credential management.
 
 ## 🤝 Contributing
 
