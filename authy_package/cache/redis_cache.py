@@ -1,4 +1,4 @@
-import redis.asyncio as redis
+import aioredis as redis
 import time
 import hashlib
 from typing import Optional, Dict, Any
