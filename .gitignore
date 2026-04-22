@@ -1,1 +1,29 @@
-Nothing to output - the file changes consist only of source/config files (.md files) with no build artifacts, dependencies, or temporary files that need to be ignored.
+```
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Dependencies
+venv/
+.venv/
+.env
+.env.local
+*.env.*
+
+# Logs
+*.log
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*.tmp
+
+# Build artifacts
+dist/
+build/
+target/
+```

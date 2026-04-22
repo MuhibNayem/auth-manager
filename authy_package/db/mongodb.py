@@ -97,3 +97,61 @@ class MongoDB(AbstractDatabase):
             raise ValueError("User not found.")
 
         return {"message": "Password updated successfully."}
+
+    async def create_saml_provider(self, provider_data: dict) -> str:
+        """Create a SAML provider configuration."""
+        from datetime import datetime
+        provider_data['created_at'] = datetime.utcnow()
+        result = await self.collection.insert_one(provider_data)
+        return str(result.inserted_id)
+
+    async def get_saml_provider_by_entity_id(self, entity_id: str):
+        """Get a SAML provider by Entity ID."""
+        return await self.collection.find_one({"entity_id": entity_id})
+
+    async def create_saml_session(self, session_data: dict) -> str:
+        """Create a SAML session."""
+        from datetime import datetime
+        session_data['created_at'] = datetime.utcnow()
+        result = await self.saml_sessions.insert_one(session_data)
+        return str(result.inserted_id)
+
+    async def get_saml_session(self, request_id: str):
+        """Get a SAML session by request ID."""
+        return await self.saml_sessions.find_one({"request_id": request_id})
+
+    async def delete_saml_session(self, request_id: str) -> bool:
+        """Delete a SAML session."""
+        result = await self.saml_sessions.delete_one({"request_id": request_id})
+        return result.deleted_count > 0
+
+    async def delete_saml_provider(self, entity_id: str) -> bool:
+        """Delete a SAML provider."""
+        result = await self.collection.delete_one({"entity_id": entity_id})
+        return result.deleted_count > 0
+
+    async def create_oidc_provider(self, provider_data: dict) -> str:
+        """Create an OIDC provider configuration."""
+        from datetime import datetime
+        provider_data['created_at'] = datetime.utcnow()
+        result = await self.oidc_providers.insert_one(provider_data)
+        return str(result.inserted_id)
+
+    async def get_oidc_provider(self, provider_id: str):
+        """Get an OIDC provider by ID."""
+        return await self.oidc_providers.find_one({"provider_id": provider_id})
+
+    async def update_oidc_provider(self, provider_id: str, update_data: dict) -> bool:
+        """Update an OIDC provider."""
+        from datetime import datetime
+        update_data['updated_at'] = datetime.utcnow()
+        result = await self.oidc_providers.update_one(
+            {"provider_id": provider_id},
+            {"$set": update_data}
+        )
+        return result.modified_count > 0
+
+    async def delete_oidc_provider(self, provider_id: str) -> bool:
+        """Delete an OIDC provider."""
+        result = await self.oidc_providers.delete_one({"provider_id": provider_id})
+        return result.deleted_count > 0

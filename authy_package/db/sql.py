@@ -114,3 +114,128 @@ class SQLDatabase(AbstractDatabase):
                 session.add(user) 
 
         return {"message": "Password updated successfully."}
+
+    async def create_saml_provider(self, provider_data: dict) -> str:
+        """Create a SAML provider configuration."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("""
+                        INSERT INTO saml_providers (entity_id, metadata_xml, sso_url, slo_url, certificate, created_at)
+                        VALUES (:entity_id, :metadata_xml, :sso_url, :slo_url, :certificate, NOW())
+                        RETURNING id
+                    """),
+                    provider_data
+                )
+                row = result.fetchone()
+                return str(row[0]) if row else None
+
+    async def get_saml_provider_by_entity_id(self, entity_id: str):
+        """Get a SAML provider by Entity ID."""
+        async with self.session_factory() as session:
+            from sqlalchemy import text
+            result = await session.execute(
+                text("SELECT * FROM saml_providers WHERE entity_id = :entity_id"),
+                {"entity_id": entity_id}
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+
+    async def create_saml_session(self, session_data: dict) -> str:
+        """Create a SAML session."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("""
+                        INSERT INTO saml_sessions (session_id, request_id, name_id, session_index, created_at)
+                        VALUES (:session_id, :request_id, :name_id, :session_index, NOW())
+                        RETURNING session_id
+                    """),
+                    session_data
+                )
+                row = result.fetchone()
+                return str(row[0]) if row else None
+
+    async def get_saml_session(self, request_id: str):
+        """Get a SAML session by request ID."""
+        async with self.session_factory() as session:
+            from sqlalchemy import text
+            result = await session.execute(
+                text("SELECT * FROM saml_sessions WHERE request_id = :request_id"),
+                {"request_id": request_id}
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+
+    async def delete_saml_session(self, request_id: str) -> bool:
+        """Delete a SAML session."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("DELETE FROM saml_sessions WHERE request_id = :request_id"),
+                    {"request_id": request_id}
+                )
+                return result.rowcount > 0
+
+    async def delete_saml_provider(self, entity_id: str) -> bool:
+        """Delete a SAML provider."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("DELETE FROM saml_providers WHERE entity_id = :entity_id"),
+                    {"entity_id": entity_id}
+                )
+                return result.rowcount > 0
+
+    async def create_oidc_provider(self, provider_data: dict) -> str:
+        """Create an OIDC provider configuration."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("""
+                        INSERT INTO oidc_providers (provider_id, issuer, client_id, client_secret, config_json, created_at)
+                        VALUES (:provider_id, :issuer, :client_id, :client_secret, :config_json, NOW())
+                        RETURNING provider_id
+                    """),
+                    provider_data
+                )
+                row = result.fetchone()
+                return str(row[0]) if row else None
+
+    async def get_oidc_provider(self, provider_id: str):
+        """Get an OIDC provider by ID."""
+        async with self.session_factory() as session:
+            from sqlalchemy import text
+            result = await session.execute(
+                text("SELECT * FROM oidc_providers WHERE provider_id = :provider_id"),
+                {"provider_id": provider_id}
+            )
+            row = result.fetchone()
+            return dict(row._mapping) if row else None
+
+    async def update_oidc_provider(self, provider_id: str, update_data: dict) -> bool:
+        """Update an OIDC provider."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                set_clause = ", ".join([f"{k} = :{k}" for k in update_data.keys()])
+                query = text(f"UPDATE oidc_providers SET {set_clause}, updated_at = NOW() WHERE provider_id = :provider_id")
+                update_data['provider_id'] = provider_id
+                result = await session.execute(query, update_data)
+                return result.rowcount > 0
+
+    async def delete_oidc_provider(self, provider_id: str) -> bool:
+        """Delete an OIDC provider."""
+        async with self.session_factory() as session:
+            async with session.begin():
+                from sqlalchemy import text
+                result = await session.execute(
+                    text("DELETE FROM oidc_providers WHERE provider_id = :provider_id"),
+                    {"provider_id": provider_id}
+                )
+                return result.rowcount > 0

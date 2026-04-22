@@ -45,3 +45,55 @@ class AbstractDatabase(ABC):
         :return: A dict with a message indicating success
         """
         pass
+
+    # SAML 2.0 Methods
+    @abstractmethod
+    async def create_saml_provider(self, provider_data: dict) -> str:
+        """Create a SAML provider configuration."""
+        pass
+
+    @abstractmethod
+    async def get_saml_provider_by_entity_id(self, entity_id: str):
+        """Get a SAML provider by Entity ID."""
+        pass
+
+    @abstractmethod
+    async def create_saml_session(self, session_data: dict) -> str:
+        """Create a SAML session."""
+        pass
+
+    @abstractmethod
+    async def get_saml_session(self, request_id: str):
+        """Get a SAML session by request ID."""
+        pass
+
+    @abstractmethod
+    async def delete_saml_session(self, request_id: str) -> bool:
+        """Delete a SAML session."""
+        pass
+
+    @abstractmethod
+    async def delete_saml_provider(self, entity_id: str) -> bool:
+        """Delete a SAML provider."""
+        pass
+
+    # OIDC Methods
+    @abstractmethod
+    async def create_oidc_provider(self, provider_data: dict) -> str:
+        """Create an OIDC provider configuration."""
+        pass
+
+    @abstractmethod
+    async def get_oidc_provider(self, provider_id: str):
+        """Get an OIDC provider by ID."""
+        pass
+
+    @abstractmethod
+    async def update_oidc_provider(self, provider_id: str, update_data: dict) -> bool:
+        """Update an OIDC provider."""
+        pass
+
+    @abstractmethod
+    async def delete_oidc_provider(self, provider_id: str) -> bool:
+        """Delete an OIDC provider."""
+        pass
