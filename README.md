@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.8+](https://img.shields.io/badge/python-3.8+-blue.svg)](https://www.python.org/downloads/)
 
-**The most developer-friendly authentication library for Python** - featuring passwordless auth, multi-tenancy, social login, MFA, and one-line framework integration.
+**The most comprehensive authentication library for Python** - featuring traditional auth, passwordless login, multi-tenancy, social OAuth, AWS Cognito integration, MFA, and framework adapters for FastAPI, Flask, and Django.
 
 ## 🚀 Quick Start
 
@@ -12,156 +12,471 @@
 pip install authy-package
 ```
 
+### Minimal Setup (Traditional Auth)
+
 ```python
-# One-line setup (auto-loads from environment variables)
-from authy_package import get_auth
+import asyncio
+from authy_package.core.auth_manager import TraditionalAuthManager
+from authy_package.db.sql import SQLDatabase
+from authy_package.cache.redis_cache import RedisCaching
+from authy_package.mfa.mfa_setup import MFAAuthManager
+from authy_package.utils.security import SecurityManager
 
-auth = get_auth()
+# Initialize components
+db = SQLDatabase("postgresql+asyncpg://user:pass@localhost/dbname")
+cache = RedisCaching("redis://localhost:6379")
+mfa = MFAAuthManager(db=db)
+security = SecurityManager(db=db, cache=cache, api_key="mailjet_key", api_secret="mailjet_secret")
 
-# Or explicit configuration
-from authy_package import init_auth, AuthConfig
+# Create auth manager
+auth = TraditionalAuthManager(db=db, cache=cache, mfa_manager=mfa, security_manager=security)
 
-config = AuthConfig(
-    jwt_secret="your-secret-key",
-    database_url="postgresql+asyncpg://user:pass@localhost/dbname",
-    redis_url="redis://localhost:6379/0"
-)
-auth = init_auth(config)
+async def main():
+    # Register user
+    await auth.register_user(username="johndoe", email="john@example.com", password="SecurePass123!")
+    
+    # Login
+    tokens = await auth.login_user(username="johndoe", password="SecurePass123!")
+    print(tokens)  # {"access_token": "...", "refresh_token": "..."}
+
+asyncio.run(main())
 ```
 
-## ✨ Market-Leading Features
+### Using Configuration Class
 
-### 🔐 Passwordless Authentication
-- **Magic Links**: One-click email login
+```python
+from authy_package.config import AuthConfig, DatabaseConfig, CacheConfig, SecurityConfig
+
+config = AuthConfig(
+    database=DatabaseConfig(
+        db_type="sql",
+        connection_string="postgresql+asyncpg://user:pass@localhost/dbname"
+    ),
+    cache=CacheConfig(redis_url="redis://localhost:6379"),
+    security=SecurityConfig(jwt_config={"secret_key": "your-super-secret-key"})
+)
+
+config.validate()  # Raises ValueError if config is invalid
+```
+
+## ✨ Core Features
+
+### 🔐 Traditional Authentication
+- **Username/Email/Phone Login**: Flexible user identification
+- **Password Hashing**: bcrypt and argon2-cffi support
+- **JWT Tokens**: Access tokens (1 hour) + refresh tokens (7 days)
+- **MFA Support**: TOTP-based (Google Authenticator compatible)
+- **Password Reset**: Email-based reset flow with secure tokens
+
+### 🪄 Passwordless Authentication
+- **Magic Links**: One-click email login with 10-minute expiry
 - **Passkeys/WebAuthn**: Biometric authentication (Touch ID, Face ID, Windows Hello)
-- **OTP**: SMS/email one-time passwords
+- **Click Tracking**: Built-in analytics for magic link usage
 
 ### 🏢 Multi-Tenancy & Organizations
-- Full organization hierarchy
-- Role-based access control (RBAC)
-- Team management and invitations
-- Billing-ready architecture
+- **Organization Model**: Tenant isolation with unique slugs
+- **Role Hierarchy**: OWNER → ADMIN → MEMBER → GUEST
+- **Invitation System**: Email-based invites with 7-day expiration
+- **Member Limits**: Plan-based restrictions (default: 10 members)
+- **RBAC Enforcement**: Role checks at route level
 
-### 🎯 Advanced Session Management
-- Multi-device session tracking
+### 🎯 Session Management
+- Multi-device session tracking with unique session IDs
+- Concurrent session limits (configurable)
 - Automatic token refresh
-- Device fingerprinting
-- Concurrent session limits
-- Predictive session pre-fetching
+- Device fingerprinting (IP, user-agent)
+- Session revocation on password change
 
 ### 📡 Real-time Webhooks
-- Event-driven architecture
-- Automatic retries with exponential backoff
-- Signature verification
-- Delivery tracking
+- **17 Event Types**: user.*, auth.*, mfa.*, org.*, session.*
+- **Retry Logic**: 5 attempts with exponential backoff (1m→5m→15m→1h→4h)
+- **Signature Verification**: HMAC-SHA256 for endpoint security
+- **Delivery Tracking**: Success/failure logging
 
 ### 🛡️ Security Features
-- JWT with automatic rotation
-- Rate limiting and bot protection
-- Fraud detection and anomaly monitoring
-- Comprehensive audit logging (SOC2/GDPR ready)
-- Account lockout protection
+- **Password Hashing**: bcrypt/argon2-cffi
+- **JWT**: HS256/RS256 with configurable expiration
+- **Rate Limiting**: Redis-backed (5 attempts/5 min default)
+- **Account Lockout**: 15-minute default duration
+- **Audit Logging**: SOC2/GDPR compliant with 365-day retention
 
-### 🚀 Framework Integration
-- **FastAPI**: One-line dependency injection
-- **Flask**: Simple decorators
-- **Django**: Middleware and decorators
+### 🌐 Social Authentication
+- **Google OAuth2**: Full OAuth2 flow
+- **Facebook Login**: Graph API integration
+- **GitHub OAuth**: Developer-friendly setup
+- **Apple Sign-In**: Privacy-focused authentication
+
+### ☁️ AWS Cognito Integration
+- User registration and authentication
+- Social login through Cognito
+- Token management and refresh
+- User attribute updates
+- Account confirmation flows
+
+### 🔧 Framework Adapters
+- **FastAPI**: Dependency injection decorators
+- **Flask**: Route decorators
+- **Django**: Middleware and view decorators
 
 ## 📖 Documentation
 
-### Basic Usage
+### Traditional Authentication
 
 ```python
-from authy_package import get_auth
+from authy_package.core.auth_manager import TraditionalAuthManager
+from authy_package.db.sql import SQLDatabase
+from authy_package.cache.redis_cache import RedisCaching
+from authy_package.mfa.mfa_setup import MFAAuthManager
+from authy_package.utils.security import SecurityManager
 
-auth = get_auth()
+# Initialize
+db = SQLDatabase("postgresql+asyncpg://user:pass@localhost/dbname")
+cache = RedisCaching("redis://localhost:6379")
+mfa = MFAAuthManager(db=db)
+security = SecurityManager(db=db, cache=cache, api_key="mailjet_key", api_secret="mailjet_secret")
+auth = TraditionalAuthManager(db=db, cache=cache, mfa_manager=mfa, security_manager=security)
 
 # Register user
-user = await auth.register(email="user@example.com", password="SecurePassword123!")
+await auth.register_user(username="johndoe", email="john@example.com", password="SecurePass123!")
 
-# Login
-tokens = await auth.login(email="user@example.com", password="SecurePassword123!")
+# Login (returns tokens if cache enabled)
+tokens = await auth.login_user(username="johndoe", password="SecurePass123!")
+# {"access_token": "...", "refresh_token": "..."}
 
-# Magic link login
-await auth.passwordless.send_magic_link("user@example.com")
-user = await auth.passwordless.verify_magic_link(token)
+# Login with MFA
+tokens = await auth.login_user(email="john@example.com", password="SecurePass123!", mfa_code="123456")
 
-# Passkey registration
-options = await auth.passkeys.register_start(user_id, email)
-# ... client-side WebAuthn ...
-credential = await auth.passkeys.register_complete(user_id, response)
+# Enable MFA
+mfa_setup = await auth.enable_mfa(username="johndoe")
+# Returns mfa_secret for QR code generation
+
+# Password reset request
+await auth.request_password_reset(email="john@example.com", sender_email="noreply@example.com")
+
+# Reset password
+await auth.reset_password(email="john@example.com", token="reset_token", new_password="NewPass123!")
+
+# Refresh tokens
+new_tokens = await auth.refresh_token(refresh_token=tokens["refresh_token"])
+
+# Logout
+await auth.logout_user(access_token=tokens["access_token"], username="johndoe")
+```
+
+### Magic Links (Passwordless)
+
+```python
+from authy_package.passwordless.magic_link import MagicLinkManager
+
+magic = MagicLinkManager(db=db, cache=cache, config=config)
+
+# Send magic link
+await magic.send_magic_link(
+    email="user@example.com",
+    redirect_url="https://myapp.com/auth/callback"
+)
+
+# Verify magic link token
+user = await magic.verify_magic_link(token="magic_link_token")
+```
+
+### Passkeys/WebAuthn
+
+```python
+from authy_package.passwordless.passkey import PasskeyManager
+
+passkeys = PasskeyManager(db=db, config=config)
+
+# Start registration
+options = await passkeys.register_start(user_id="user123", email="user@example.com")
+# Returns WebAuthn creation options for client-side
+
+# Complete registration
+credential = await passkeys.register_complete(user_id="user123", response=client_response)
+
+# Start authentication
+options = await passkeys.authenticate_start()
+
+# Complete authentication
+user = await passkeys.authenticate_complete(response=client_response)
+```
+
+### Organization Management
+
+```python
+from authy_package.organizations.org_manager import OrganizationManager, OrgRole
+
+org_mgr = OrganizationManager(config=config, db=db, cache=cache)
+
+# Create organization
+org = await org_mgr.create_organization(
+    name="Acme Corp",
+    owner_id="user123",
+    slug="acme-corp"  # Optional, auto-generated if not provided
+)
+
+# Get organization by slug
+org = await org_mgr.get_organization_by_slug("acme-corp")
+
+# Add member directly
+await org_mgr.add_member(org.id, "user456", OrgRole.MEMBER, invited_by="user123")
+
+# Send invitation
+invitation = await org_mgr.send_invitation(
+    org_id=org.id,
+    email="new@example.com",
+    role=OrgRole.GUEST,
+    invited_by="user123"
+)
+
+# Accept invitation
+member = await org_mgr.accept_invitation(token="invite_token", user_id="user789")
+
+# Get user's role in organization
+role = await org_mgr.get_member_role(org.id, "user456")
+# Returns OrgRole.MEMBER
+
+# Get all members
+members = await org_mgr.get_members(org.id)
+
+# Update member role
+await org_mgr.update_member_role(org.id, "user456", OrgRole.ADMIN)
+
+# Remove member (cannot remove last owner)
+await org_mgr.remove_member(org.id, "user456")
+```
+
+### Audit Logging
+
+```python
+from authy_package.admin.audit_logger import AuditLogger, EventType
+
+audit = AuditLogger(config=config, db=db, cache=cache)
+
+# Log an event
+await audit.log(
+    event_type=EventType.LOGIN_SUCCESS,
+    action="User logged in successfully",
+    actor_id="user123",
+    actor_email="user@example.com",
+    ip_address="192.168.1.1",
+    user_agent="Mozilla/5.0...",
+    metadata={"session_id": "sess_abc123"},
+    severity="info",
+    status="success"
+)
+
+# Search audit logs
+events = await audit.search(
+    actor_id="user123",
+    start_date=datetime.now() - timedelta(days=7),
+    limit=100
+)
+
+# Get security events
+security_events = await audit.get_security_events(organization_id="org123", limit=50)
+
+# Export for compliance (JSON or CSV)
+csv_export = await audit.export_events(
+    filters={"organization_id": "org123"},
+    format="csv"
+)
+
+# Get statistics
+stats = await audit.get_statistics(
+    start_date=datetime.now() - timedelta(days=30),
+    end_date=datetime.now(),
+    group_by="event_type"
+)
+```
+
+### Webhooks
+
+```python
+from authy_package.webhooks.webhook_manager import WebhookManager, WebhookEventType
+import httpx
+
+http_client = httpx.AsyncClient()
+webhooks = WebhookManager(config=config, db=db, cache=cache, http_client=http_client)
+
+# Register webhook endpoint
+endpoint = await webhooks.register_endpoint(
+    url="https://api.example.com/webhooks/auth",
+    events=[
+        WebhookEventType.USER_CREATED,
+        WebhookEventType.USER_LOGGED_IN,
+        WebhookEventType.PASSWORD_RESET_REQUESTED
+    ],
+    secret="your-webhook-secret"  # Optional, auto-generated if not provided
+)
+
+# Dispatch event
+await webhooks.dispatch_event(
+    event_type=WebhookEventType.USER_CREATED,
+    payload={"user_id": "user123", "email": "user@example.com"},
+    sync=False  # Async delivery (recommended)
+)
+
+# List endpoints
+endpoints = await webhooks.list_endpoints()
+
+# Delete endpoint
+await webhooks.delete_endpoint(endpoint_id="ep_123")
+
+# Verify webhook signature (on receiver side)
+from authy_package.webhooks.webhook_manager import WebhookManager
+
+is_valid = WebhookManager.verify_signature(
+    payload=request.json,
+    signature=request.headers["X-Webhook-Signature"],
+    secret="your-webhook-secret",
+    timestamp=request.headers["X-Webhook-Timestamp"]
+)
 ```
 
 ### FastAPI Integration
 
 ```python
 from fastapi import FastAPI, Depends
-from authy_package import get_auth
-from authy_package.frameworks import FastAPIAuth
+from authy_package.frameworks.fastapi_adapter import FastAPIAuth
+from authy_package.core.auth_manager import TraditionalAuthManager
 
 app = FastAPI()
-auth = get_auth()
+auth = TraditionalAuthManager(...)  # Initialize as shown above
 fastapi_auth = FastAPIAuth(auth)
 
+# Protected route (requires authentication)
 @app.get("/protected")
 async def protected_route(user=Depends(fastapi_auth.require_auth())):
-    return {"message": f"Hello {user['email']}"}
+    return {"message": f"Hello {user['email']}", "user": user}
 
+# Role-based access control
 @app.get("/admin")
-async def admin_route(user=Depends(fastapi_auth.require_role("admin"))):
+async def admin_route(user=Depends(fastapi_auth.require_role("admin", "owner"))):
     return {"message": "Admin access granted"}
 
+# Organization membership check
+@app.get("/org/dashboard")
+async def org_dashboard(user=Depends(fastapi_auth.require_org_membership())):
+    # user['current_org'] contains org context
+    return {"org": user['current_org']}
+
+# Rate limiting
 @app.post("/login")
-async def login(credentials=Depends(fastapi_auth.rate_limit(5, 60))):
-    # Rate limited: 5 requests per minute
-    pass
+async def login(rate_check=Depends(fastapi_auth.rate_limit(5, 60))):
+    # Max 5 requests per minute per IP
+    credentials = await request.json()
+    tokens = await auth.login_user(**credentials)
+    return tokens
+
+# Optional authentication (doesn't fail if no token)
+@app.get("/public-or-private")
+async def mixed_route(user=Depends(fastapi_auth.optional_auth())):
+    if user:
+        return {"message": f"Welcome back {user['email']}"}
+    return {"message": "Welcome, guest"}
 ```
 
-### Organization Management
+### AWS Cognito Integration
 
 ```python
-from authy_package.organizations import OrgRole
+from authy_package.cognito.cognito_manager import CognitoManager
+from authy_package.core.auth_manager import CognitoAuthManager
 
-# Create organization
-org = await auth.organizations.create_organization("Acme Corp", owner_id=user_id)
+cognito = CognitoManager(
+    region_name="us-east-1",
+    user_pool_id="us-east-1_xxxxxxxxx",
+    app_client_id="xxxxxxxxxxxxxxxxxxxx"
+)
+cognito_auth = CognitoAuthManager(cognito_manager=cognito)
 
-# Send invitation
-await auth.organizations.send_invitation(
-    org.id, 
-    "new@example.com", 
-    OrgRole.MEMBER,
-    invited_by=user_id
+# Register user
+await cognito_auth.register_user(
+    username="johndoe",
+    password="SecurePass123!",
+    email="john@example.com",
+    phone_number="+1234567890"
 )
 
-# Check membership
-role = await auth.organizations.get_member_role(org.id, user_id)
+# Login
+tokens = await cognito_auth.login_user(username="johndoe", password="SecurePass123!")
+
+# Social login initiation
+auth_url = await cognito_auth.initiate_social_login(
+    provider="Google",
+    redirect_uri="https://myapp.com/callback"
+)
+
+# Exchange authorization code for tokens
+tokens = await cognito_auth.exchange_code_for_tokens(
+    code="auth_code_from_callback",
+    redirect_uri="https://myapp.com/callback"
+)
+
+# Refresh tokens
+new_tokens = await cognito_auth.refresh_token(refresh_token=tokens["refresh_token"])
+
+# Password reset flow
+await cognito_auth.reset_password(username="johndoe")
+await cognito_auth.confirm_password(
+    username="johndoe",
+    confirmation_code="123456",
+    new_password="NewPass123!"
+)
+
+# Confirm user account (for email/phone verification)
+await cognito_auth.confirm_user_account(
+    username="johndoe",
+    confirmation_code="123456"
+)
+
+# Update user attributes
+await cognito_auth.update_user_attributes(
+    access_token=tokens["access_token"],
+    attributes=[{"Name": "custom:department", "Value": "Engineering"}]
+)
+
+# Get user info
+user_info = await cognito_auth.get_user_info(access_token=tokens["access_token"])
+
+# Logout
+logout_url = await cognito_auth.logout_user(
+    redirect_uri="https://myapp.com/logged-out",
+    access_token=tokens["access_token"]
+)
 ```
 
-### Audit Logging
+### Social Authentication (Direct OAuth)
 
 ```python
-from authy_package.admin import EventType
+from authy_package.social.google import GoogleManager
+from authy_package.social.github import GitHubManager
+from authy_package.social.facebook import FacebookManager
+from authy_package.social.apple import AppleManager
 
-# Log security event
-await auth.audit.log(
-    event_type=EventType.LOGIN_FAILED,
-    action="Failed login attempt",
-    actor_id=user_id,
-    ip_address=request_ip,
-    severity="warning"
+# Google OAuth
+google = GoogleManager(
+    client_id="google_client_id",
+    client_secret="google_client_secret",
+    redirect_uri="https://myapp.com/auth/google/callback"
 )
 
-# Search audit logs
-events = await auth.audit.search(
-    actor_id=user_id,
-    start_date=datetime.now() - timedelta(days=7)
+auth_url = google.get_authorization_url()
+tokens = await google.exchange_code(code="auth_code")
+user_info = await google.get_user_info(access_token=tokens["access_token"])
+
+# GitHub OAuth
+github = GitHubManager(
+    client_id="github_client_id",
+    client_secret="github_client_secret",
+    redirect_uri="https://myapp.com/auth/github/callback"
 )
 
-# Export for compliance
-csv_export = await auth.audit.export_events(
-    filters={"organization_id": org_id},
-    format="csv"
-)
+auth_url = github.get_authorization_url()
+tokens = await github.exchange_code(code="auth_code")
+user_info = await github.get_user_info(access_token=tokens["access_token"])
+
+# Similar patterns for Facebook and Apple
 ```
 
 ## 🔧 Configuration
@@ -169,124 +484,265 @@ csv_export = await auth.audit.export_events(
 ### Environment Variables
 
 ```env
-# Required
+# Database (Required)
+AUTHY_DB_TYPE=sql                          # "sql" or "mongodb"
+AUTHY_DB_URL=postgresql+asyncpg://user:pass@localhost:5432/authy
+AUTHY_DB_NAME=authy                        # For MongoDB
+AUTHY_DB_COLLECTION=users                  # For MongoDB
+
+# Cache/Redis (Required for JWT tokens)
+AUTHY_CACHE_ENABLED=true
+AUTHY_REDIS_URL=redis://localhost:6379
+AUTHY_TOKEN_EXPIRATION=3600                # 1 hour
+AUTHY_REFRESH_TOKEN_EXPIRATION=604800      # 7 days
+
+# JWT Security (Required)
 AUTHY_JWT_SECRET=your-super-secret-key-min-32-chars
-AUTHY_DATABASE_URL=postgresql+asyncpg://user:pass@localhost:5432/authy
-AUTHY_REDIS_URL=redis://localhost:6379/0
 
-# Optional
-AUTHY_APP_NAME=My Application
-AUTHY_BASE_URL=https://myapp.com
-AUTHY_SESSION_EXPIRY=3600
-AUTHY_REFRESH_TOKEN_EXPIRY_DAYS=30
-AUTHY_MAX_CONCURRENT_SESSIONS=5
-AUTHY_AUTO_CREATE_USERS=true
+# Rate Limiting
+AUTHY_RATE_LIMIT_ENABLED=true
+AUTHY_RATE_LIMIT_MAX_ATTEMPTS=5
+AUTHY_RATE_LIMIT_WINDOW_SECONDS=300        # 5 minutes
+
+# Email (for password resets and magic links)
+AUTHY_EMAIL_ENABLED=false
+MAILJET_API_KEY=xxx
+MAILJET_API_SECRET=xxx
+SENDER_EMAIL=noreply@example.com
+SENDER_NAME=My App
+
+# Social Providers (Optional)
+GOOGLE_CLIENT_ID=xxx
+GOOGLE_CLIENT_SECRET=xxx
+GOOGLE_REDIRECT_URI=https://myapp.com/auth/google/callback
+
+GITHUB_CLIENT_ID=xxx
+GITHUB_CLIENT_SECRET=xxx
+GITHUB_REDIRECT_URI=https://myapp.com/auth/github/callback
+
+FACEBOOK_APP_ID=xxx
+FACEBOOK_APP_SECRET=xxx
+FACEBOOK_REDIRECT_URI=https://myapp.com/auth/facebook/callback
+
+APPLE_CLIENT_ID=xxx
+APPLE_TEAM_ID=xxx
+APPLE_KEY_ID=xxx
+APPLE_PRIVATE_KEY=xxx
+APPLE_REDIRECT_URI=https://myapp.com/auth/apple/callback
+
+# AWS Cognito (Optional)
+AUTHY_COGNITO_ENABLED=false
+AWS_REGION=us-east-1
+COGNITO_USER_POOL_ID=us-east-1_xxxxxxxxx
+COGNITO_APP_CLIENT_ID=xxxxxxxxxxxxxxxxxxxx
+
+# Audit Logging
 AUTHY_AUDIT_LOG_RETENTION_DAYS=365
-
-# Social Providers
-AUTHY_GOOGLE_CLIENT_ID=xxx
-AUTHY_GOOGLE_CLIENT_SECRET=xxx
-AUTHY_GITHUB_CLIENT_ID=xxx
-AUTHY_GITHUB_CLIENT_SECRET=xxx
-
-# Email (for magic links)
-AUTHY_EMAIL_PROVIDER=mailjet
-AUTHY_MAILJET_API_KEY=xxx
-AUTHY_MAILJET_SECRET=xxx
 ```
 
 ### Programmatic Configuration
 
 ```python
-from authy_package import AuthConfig
+from authy_package.config import AuthConfig, DatabaseConfig, CacheConfig, SecurityConfig, SocialAuthConfig, EmailConfig
 
 config = AuthConfig(
-    jwt_secret="your-secret-key",
-    database_url="postgresql+asyncpg://...",
-    redis_url="redis://...",
-    app_name="My App",
-    base_url="https://myapp.com",
-    session_expiry=3600,
-    refresh_token_expiry_days=30,
-    max_concurrent_sessions=5,
-    auto_create_users=True,
-    audit_log_retention_days=365,
-    
-    # Social providers
-    google_client_id="xxx",
-    google_client_secret="xxx",
-    
-    # Email
-    email_provider="mailjet",
-    mailjet_api_key="xxx",
-    mailjet_secret="xxx"
+    database=DatabaseConfig(
+        db_type="sql",
+        connection_string="postgresql+asyncpg://user:pass@localhost/dbname",
+        orm_model=UserORMModel  # Your SQLAlchemy model
+    ),
+    cache=CacheConfig(
+        enabled=True,
+        redis_url="redis://localhost:6379",
+        token_expiration=3600,
+        refresh_token_expiration=604800
+    ),
+    security=SecurityConfig(
+        jwt_config={
+            "secret_key": "your-super-secret-key",
+            "algorithm": "HS256"
+        },
+        rate_limit_enabled=True,
+        rate_limit_max_attempts=5,
+        account_lockout_duration=900  # 15 minutes
+    ),
+    social=SocialAuthConfig(
+        google_client_id="xxx",
+        google_client_secret="xxx",
+        github_client_id="xxx",
+        github_client_secret="xxx"
+    ),
+    email=EmailConfig(
+        enabled=True,
+        provider="mailjet",
+        api_key="xxx",
+        api_secret="xxx",
+        sender_email="noreply@example.com",
+        sender_name="My App"
+    ),
+    app_name="My Application",
+    debug=False
 )
-```
 
-## 🎯 Unique Developer-Loving Features
-
-### 🪄 Magic Import
-```python
-from authy_package import get_auth
-auth = get_auth()  # Auto-configured from ENV
-```
-
-### 🧪 Mock Mode for Testing
-```python
-config = AuthConfig.from_env(mock_mode=True)
-# No external dependencies needed for tests
-```
-
-### 🎭 User Impersonation
-```python
-# Debug as another user
-impersonated_tokens = await auth.impersonate_user(target_user_id, admin_user_id)
-```
-
-### 📈 Built-in Analytics Events
-All events automatically tracked:
-- Login success/failure rates
-- Social provider usage
-- MFA adoption
-- Session patterns
-
-### 🛠️ CLI Tool (Coming Soon)
-```bash
-authy init          # Scaffold new project
-authy deploy        # Deploy hosted auth
-authy migrate       # Run database migrations
+# Validate configuration before use
+config.validate()  # Raises ValueError if invalid
 ```
 
 ## 📦 Installation
 
-### Basic
+### Basic Installation
 ```bash
 pip install authy-package
 ```
 
-### With all features
+### With All Dependencies
 ```bash
 pip install authy-package[full]
+# Includes: asyncpg, motor (MongoDB), redis, httpx, pyjwt[crypto], bcrypt, argon2-cffi
 ```
 
-### Development
+### Development Installation
 ```bash
 git clone https://github.com/yourusername/authy-package.git
 cd authy-package
 pip install -e ".[dev]"
+# Includes: pytest, pytest-asyncio, black, flake8, mypy
 ```
 
-## 🔒 Security
+### Docker Deployment
+```dockerfile
+FROM python:3.11-slim
 
-- **JWT Implementation**: RS256/ES256 support with key rotation
-- **Password Hashing**: bcrypt and argon2-cffi
-- **Webhook Signatures**: HMAC-SHA256 verification
-- **Rate Limiting**: Redis-backed distributed rate limiting
-- **Audit Logs**: Immutable, compliance-ready logging
+WORKDIR /app
+
+RUN pip install authy-package[full]
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+## 🔒 Security Best Practices
+
+### Production Checklist
+- [ ] Use strong JWT secret (min 32 characters)
+- [ ] Enable HTTPS for all endpoints
+- [ ] Set secure cookie flags (HttpOnly, Secure, SameSite)
+- [ ] Configure rate limiting (default: 5 attempts/5 min)
+- [ ] Enable audit logging for compliance
+- [ ] Rotate JWT keys periodically
+- [ ] Use environment variables for secrets
+- [ ] Enable MFA for admin accounts
+- [ ] Configure webhook signature verification
+- [ ] Set appropriate token expiration times
+
+### Password Requirements
+- Minimum 8 characters
+- At least one uppercase letter
+- At least one lowercase letter
+- At least one number
+- At least one special character
+
+### Token Security
+- Access tokens: Short-lived (default: 1 hour)
+- Refresh tokens: Medium-lived (default: 7 days)
+- Automatic revocation on password change
+- Session tracking with device fingerprinting
+
+## 🧪 Testing
+
+### Unit Tests
+```python
+import pytest
+from authy_package.config import AuthConfig
+from authy_package.core.auth_manager import TraditionalAuthManager
+
+@pytest.fixture
+def auth_config():
+    return AuthConfig(
+        database=DatabaseConfig(db_type="memory"),
+        cache=CacheConfig(enabled=False),
+        security=SecurityConfig(jwt_config={"secret_key": "test-secret"})
+    )
+
+@pytest.fixture
+def auth_manager(auth_config):
+    return TraditionalAuthManager(...)
+
+@pytest.mark.asyncio
+async def test_user_registration(auth_manager):
+    result = await auth_manager.register_user(
+        username="testuser",
+        email="test@example.com",
+        password="TestPass123!"
+    )
+    assert result["message"] == "User registered successfully."
+```
+
+### Integration Tests
+See `/examples` directory for complete integration examples:
+- `example_sql.py` - SQL database integration
+- `example_mongo.py` - MongoDB integration
+- `example_social.py` - Social OAuth flows
+- `example_cognito.py` - AWS Cognito integration
+
+## 📊 Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Application Layer                        │
+│              (FastAPI / Flask / Django)                      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                   Framework Adapters                         │
+│         FastAPIAuth | FlaskAuth | DjangoAuth                │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Core Auth Managers                        │
+│  TraditionalAuthManager | CognitoAuthManager | SocialAuth   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│  Specialized    │ │  Specialized    │ │  Specialized    │
+│  Managers       │ │  Managers       │ │  Managers       │
+│  - Sessions     │ │  - MFA          │ │  - Webhooks     │
+│  - Magic Links  │ │  - Passkeys     │ │  - Audit Log    │
+│  - Organizations│ │  - Security     │ │  - Compliance   │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                  Data & Cache Layer                          │
+│         PostgreSQL | MongoDB | Redis | Memory               │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## 🤝 Contributing
 
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
+We welcome contributions! Please see our workflow:
+
+1. **Fork the repository**
+2. **Create a feature branch**: `git checkout -b feature/amazing-feature`
+3. **Make your changes**
+4. **Run tests**: `pytest tests/`
+5. **Format code**: `black authy_package/`
+6. **Lint**: `flake8 authy_package/`
+7. **Commit**: `git commit -m 'Add amazing feature'`
+8. **Push**: `git push origin feature/amazing-feature`
+9. **Open a Pull Request**
+
+### Code Standards
+- Python 3.8+
+- Type hints required
+- Docstrings for public APIs
+- Test coverage > 80%
+- Follow PEP 8 style guide
 
 ## 📄 License
 
@@ -294,10 +750,15 @@ MIT License - see [LICENSE](LICENSE) for details.
 
 ## 🙏 Acknowledgments
 
-Inspired by Auth0, Clerk, Supabase Auth, and NextAuth.js.
+Inspired by Auth0, Clerk, Supabase Auth, NextAuth.js, and Django Allauth.
+
+## 📞 Support
+
+- **Documentation**: This README and inline code comments
+- **Examples**: `/examples` directory
+- **Issues**: GitHub Issues tab
+- **Email**: support@authy-package.dev
 
 ---
 
 **Built with ❤️ for the Python community**
-
-For support, join our [Discord](https://discord.gg/authy) or open an issue on GitHub.
