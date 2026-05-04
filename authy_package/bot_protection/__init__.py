@@ -41,9 +41,11 @@ Environment Variables:
 from .abstract_provider import (
     AbstractCaptchaProvider,
     CaptchaVerificationResult,
+    BehavioralAnalysis,
     BotProtectionError,
     RateLimitExceededError,
-    SuspiciousActivityError
+    SuspiciousActivityError,
+    RiskLevel
 )
 from .bot_protection_manager import BotProtectionManager
 
