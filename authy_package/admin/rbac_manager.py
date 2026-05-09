@@ -197,15 +197,6 @@ class RBACManager:
             "scope_type": scope_type.value,
             "scope_id": scope_id
         })
-        if not assignments:
-            fallback_assignments = await self.db.query("role_assignments", {
-                "user_id": user_id,
-                "scope_id": scope_id
-            })
-            assignments = [
-                assign for assign in fallback_assignments
-                if assign.get("scope_type") in {scope_type, scope_type.value}
-            ]
         
         roles = []
         for assign in assignments:

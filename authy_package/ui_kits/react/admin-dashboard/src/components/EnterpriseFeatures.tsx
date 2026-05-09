@@ -123,8 +123,8 @@ export function ApiKeyManager() {
   const createKeyMutation = useMutation({
     mutationFn: (data: { name: string; scopes: string[] }) =>
       api.post('/admin/v2/api-keys', data).then(res => res.data),
-    onSuccess: (data: { full_secret?: string }) => {
-      setShowSecret(data.full_secret ?? null);
+    onSuccess: (data: { full_secret: string }) => {
+      setShowSecret(data.full_secret);
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
     },
   });
