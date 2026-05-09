@@ -47,7 +47,9 @@ jobs:
         run: poetry config virtualenvs.create false
 
       - name: Install dependencies
-        run: poetry install --sync --no-interaction
+        run: |
+          poetry lock --no-update || poetry lock
+          poetry install --no-interaction
 
       - name: Determine version bump
         id: version_bump
