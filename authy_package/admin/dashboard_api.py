@@ -802,7 +802,8 @@ async def list_audit_logs(
         "pagination": {
             "page": page,
             "page_size": page_size,
-            "total": len(events_data)
+            "total": len(events_data),
+            "total_pages": (len(events_data) + page_size - 1) // page_size
         }
     }
 

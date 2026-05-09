@@ -108,7 +108,7 @@ export interface OrganizationsListResponse {
 
 export interface AuditEventsListResponse {
   events: AuditEvent[];
-  pagination: Omit<PaginatedResponse<AuditEvent>['pagination'], 'total_pages'> & { total_pages?: number };
+  pagination: PaginatedResponse<AuditEvent>['pagination'];
 }
 
 export interface Permission {

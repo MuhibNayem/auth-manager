@@ -201,9 +201,8 @@ class RBACManager:
         roles = []
         for assign in assignments:
             expires_at = assign.get('expires_at')
-            if isinstance(expires_at, str):
-                expires_at = datetime.fromisoformat(expires_at)
-            if expires_at and expires_at < datetime.utcnow():
+            expires_at_dt = datetime.fromisoformat(expires_at) if isinstance(expires_at, str) else expires_at
+            if expires_at_dt and expires_at_dt < datetime.utcnow():
                 continue # Expired
             
             role_id = assign['role_id']

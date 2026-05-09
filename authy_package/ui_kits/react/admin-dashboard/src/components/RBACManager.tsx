@@ -297,7 +297,7 @@ export const RoleManager: React.FC = () => {
 };
 
 export const RoleAssignments: React.FC<{ userId: string }> = ({ userId }) => {
-  const { data: roles } = useQuery({
+  const { data: assignedRoles } = useQuery({
     queryKey: ['user-roles', userId],
     queryFn: () =>
       api.get(`/admin/v2/rbac/users/${userId}/roles`).then(res => res.data),
@@ -306,11 +306,11 @@ export const RoleAssignments: React.FC<{ userId: string }> = ({ userId }) => {
   return (
     <div className="mt-6">
       <h3 className="text-lg font-semibold mb-3">Assigned Roles</h3>
-      {roles?.length === 0 ? (
+      {assignedRoles?.length === 0 ? (
         <p className="text-gray-500 text-sm">No roles assigned</p>
       ) : (
         <div className="space-y-2">
-          {roles?.map((role: Role) => (
+          {assignedRoles?.map((role: Role) => (
             <div
               key={role.id}
               className="flex items-center justify-between p-3 bg-gray-50 rounded-md"
