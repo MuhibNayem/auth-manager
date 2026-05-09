@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { Role, Permission, RoleAssignment } from '../types';
+import { Role, Permission } from '../types';
 
 // --- Types ---
 
@@ -297,7 +297,7 @@ export const RoleManager: React.FC = () => {
 };
 
 export const RoleAssignments: React.FC<{ userId: string }> = ({ userId }) => {
-  const { data: assignments } = useQuery({
+  const { data: roles } = useQuery({
     queryKey: ['user-roles', userId],
     queryFn: () =>
       api.get(`/admin/v2/rbac/users/${userId}/roles`).then(res => res.data),
@@ -306,23 +306,23 @@ export const RoleAssignments: React.FC<{ userId: string }> = ({ userId }) => {
   return (
     <div className="mt-6">
       <h3 className="text-lg font-semibold mb-3">Assigned Roles</h3>
-      {assignments?.length === 0 ? (
+      {roles?.length === 0 ? (
         <p className="text-gray-500 text-sm">No roles assigned</p>
       ) : (
         <div className="space-y-2">
-          {assignments?.map((assignment: any) => (
+          {roles?.map((role: Role) => (
             <div
-              key={assignment.id}
+              key={role.id}
               className="flex items-center justify-between p-3 bg-gray-50 rounded-md"
             >
               <div>
-                <p className="font-medium">{assignment.role_name}</p>
+                <p className="font-medium">{role.name}</p>
                 <p className="text-xs text-gray-500">
-                  Scope: {assignment.scope_type} {assignment.scope_id && `(${assignment.scope_id})`}
+                  {role.description}
                 </p>
               </div>
               <span className="text-xs text-gray-400">
-                Expires: {assignment.expires_at ? new Date(assignment.expires_at).toLocaleDateString() : 'Never'}
+                {role.is_system ? 'System Role' : 'Custom Role'}
               </span>
             </div>
           ))}

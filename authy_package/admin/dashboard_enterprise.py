@@ -64,6 +64,10 @@ class ApiKeyResponse(BaseModel):
     expires_at: Optional[datetime]
     last_used_at: Optional[datetime] = None
 
+
+class ApiKeyCreateResponse(ApiKeyResponse):
+    full_secret: str
+
 # In-memory store for demo (Replace with DB in production)
 active_api_keys: Dict[str, Dict] = {}
 branding_config = BrandingConfig()
@@ -94,7 +98,7 @@ async def update_localization(config: LocalizationConfig):
     locale_config = config
     return locale_config
 
-@router.post("/api-keys", response_model=ApiKeyResponse)
+@router.post("/api-keys", response_model=ApiKeyCreateResponse)
 async def create_api_key(request: CreateApiKeyRequest):
     """Generate a new API key with specific scopes."""
     import secrets
@@ -117,10 +121,10 @@ async def create_api_key(request: CreateApiKeyRequest):
     }
     active_api_keys[key_id] = key_data
     
-    response = ApiKeyResponse(**{k: v for k, v in key_data.items() if k != 'secret'})
-    # Inject the full secret in a way the UI can capture it once
-    response.dict()["full_secret"] = f"{prefix}{secret[8:]}" 
-    return response
+    return ApiKeyCreateResponse(
+        **{k: v for k, v in key_data.items() if k != 'secret'},
+        full_secret=f"{prefix}{secret[8:]}"
+    )
 
 @router.get("/api-keys", response_model=List[ApiKeyResponse])
 async def list_api_keys():

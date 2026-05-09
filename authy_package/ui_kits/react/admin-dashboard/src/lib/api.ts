@@ -2,7 +2,7 @@ import axios from 'axios';
 import type { 
   User, Organization, AuditEvent, Session, 
   DashboardMetrics, WebhookEndpoint, HealthStatus,
-  SecurityAnalysis, PaginatedResponse 
+  SecurityAnalysis, UsersListResponse, AuditEventsListResponse, OrganizationsListResponse
 } from '../types';
 
 const API_BASE = '/admin/api/v1';
@@ -14,6 +14,7 @@ export const apiClient = axios.create({
     'Content-Type': 'application/json',
   },
 });
+export const api = apiClient;
 
 // Add token interceptor (token will be set from store)
 apiClient.interceptors.request.use((config) => {
@@ -48,7 +49,7 @@ export const usersAPI = {
     status?: string;
     organization_id?: string;
     role?: string;
-  }): Promise<PaginatedResponse<User>> => {
+  }): Promise<UsersListResponse> => {
     const { data } = await apiClient.get('/users', { params });
     return data;
   },
@@ -86,7 +87,7 @@ export const usersAPI = {
 
 // Organizations
 export const organizationsAPI = {
-  list: async (params: { page?: number; page_size?: number; search?: string }) => {
+  list: async (params: { page?: number; page_size?: number; search?: string }): Promise<OrganizationsListResponse> => {
     const { data } = await apiClient.get('/organizations', { params });
     return data;
   },
@@ -114,7 +115,7 @@ export const auditAPI = {
     end_date?: string;
     severity?: string;
     status?: string;
-  }): Promise<PaginatedResponse<AuditEvent>> => {
+  }): Promise<AuditEventsListResponse> => {
     const { data } = await apiClient.get('/audit-logs', { params });
     return data;
   },

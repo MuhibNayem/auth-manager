@@ -17,7 +17,7 @@ Features:
 - Real-time WebSocket Updates
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks, WebSocket, WebSocketDisconnect, Header
 from fastapi.responses import JSONResponse, StreamingResponse, FileResponse
 from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any, Literal
@@ -123,6 +123,28 @@ class DashboardMetrics(BaseModel):
     webhook_delivery_rate: float
 
 
+class PaginationMetadata(BaseModel):
+    page: int
+    page_size: int
+    total: int
+    total_pages: Optional[int] = None
+
+
+class UsersListResponse(BaseModel):
+    users: List[Dict[str, Any]]
+    pagination: PaginationMetadata
+
+
+class OrganizationsListResponse(BaseModel):
+    organizations: List[Dict[str, Any]]
+    pagination: PaginationMetadata
+
+
+class AuditLogsListResponse(BaseModel):
+    events: List[Dict[str, Any]]
+    pagination: PaginationMetadata
+
+
 class WebhookEndpointCreate(BaseModel):
     url: str = Field(..., pattern=r"^https?://")
     events: List[str] = []  # Empty means all events
@@ -146,7 +168,8 @@ admin_router = APIRouter(prefix="/admin/api/v1", tags=["Admin Dashboard"])
 # ==================== Helper Functions ====================
 
 async def get_current_admin_user(
-    token: str = Query(..., description="Admin JWT token"),
+    token: Optional[str] = Query(default=None, description="Admin JWT token"),
+    authorization: Optional[str] = Header(default=None),
     auth_manager=None  # Injected via dependency
 ) -> dict:
     """Validate admin user token and permissions"""
@@ -154,7 +177,13 @@ async def get_current_admin_user(
         raise HTTPException(status_code=500, detail="Auth manager not configured")
     
     try:
-        payload = await auth_manager.verify_token(token)
+        auth_token = token
+        if not auth_token and authorization and authorization.startswith("Bearer "):
+            auth_token = authorization.split(" ", 1)[1]
+        if not auth_token:
+            raise HTTPException(status_code=401, detail="Missing bearer token")
+
+        payload = await auth_manager.verify_token(auth_token)
         if not payload:
             raise HTTPException(status_code=401, detail="Invalid token")
         
@@ -312,7 +341,7 @@ async def get_chart_data(
 
 # ==================== User Management Endpoints ====================
 
-@admin_router.get("/users", response_model=List[Dict[str, Any]])
+@admin_router.get("/users", response_model=UsersListResponse)
 async def list_users(
     current_user: dict = Depends(get_current_admin_user),
     auth_manager=None,
@@ -633,7 +662,7 @@ async def impersonate_user(
 
 # ==================== Organization Management ====================
 
-@admin_router.get("/organizations", response_model=List[Dict[str, Any]])
+@admin_router.get("/organizations", response_model=OrganizationsListResponse)
 async def list_organizations(
     current_user: dict = Depends(get_current_admin_user),
     auth_manager=None,
@@ -721,7 +750,7 @@ async def create_organization(
 
 # ==================== Audit Log Endpoints ====================
 
-@admin_router.get("/audit-logs", response_model=List[Dict[str, Any]])
+@admin_router.get("/audit-logs", response_model=AuditLogsListResponse)
 async def list_audit_logs(
     current_user: dict = Depends(get_current_admin_user),
     auth_manager=None,

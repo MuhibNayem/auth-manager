@@ -96,6 +96,53 @@ export interface PaginatedResponse<T> {
   };
 }
 
+export interface UsersListResponse {
+  users: User[];
+  pagination: PaginatedResponse<User>['pagination'];
+}
+
+export interface OrganizationsListResponse {
+  organizations: Organization[];
+  pagination: PaginatedResponse<Organization>['pagination'];
+}
+
+export interface AuditEventsListResponse {
+  events: AuditEvent[];
+  pagination: Omit<PaginatedResponse<AuditEvent>['pagination'], 'total_pages'> & { total_pages?: number };
+}
+
+export interface Permission {
+  id: string;
+  name: string;
+  description: string;
+  category: string;
+  scope: 'global' | 'organization' | 'team' | 'resource';
+  created_at: string;
+}
+
+export interface Role {
+  id: string;
+  name: string;
+  description: string;
+  permissions: string[];
+  inherits_from?: string;
+  is_system: boolean;
+  organization_id?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RoleAssignment {
+  id: string;
+  user_id: string;
+  role_id: string;
+  scope_type: 'global' | 'organization' | 'team' | 'resource';
+  scope_id?: string;
+  expires_at?: string;
+  granted_by: string;
+  created_at: string;
+}
+
 export type UserRole = 'owner' | 'admin' | 'member' | 'guest';
 
 export interface OrgMember {

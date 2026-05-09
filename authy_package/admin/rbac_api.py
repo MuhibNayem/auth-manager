@@ -3,7 +3,7 @@ Authy Enterprise RBAC API
 FastAPI endpoints for Role & Permission Management.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Body
+from fastapi import APIRouter, HTTPException, Depends, Body, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from datetime import datetime
@@ -12,7 +12,7 @@ from datetime import datetime
 # from authy_package.admin.rbac_manager import RBACManager, PermissionScope
 from .rbac_manager import RBACManager, PermissionScope
 
-router = APIRouter(prefix="/v2/rbac", tags=["RBAC"])
+router = APIRouter(prefix="/admin/v2/rbac", tags=["RBAC"])
 
 # --- Pydantic Models ---
 
@@ -68,11 +68,11 @@ class PermissionCheckResponse(BaseModel):
 
 # --- Dependency Injection ---
 
-def get_rbac_manager() -> RBACManager:
-    # In real app, inject actual DB interface
-    # rbac = RBACManager(db=get_db())
-    # For now, we assume it's initialized globally or via config
-    raise NotImplementedError("Initialize RBACManager with DB interface")
+def get_rbac_manager(request: Request) -> RBACManager:
+    rbac_manager = getattr(request.app.state, "rbac_manager", None)
+    if not rbac_manager:
+        raise HTTPException(status_code=500, detail="RBAC manager not configured")
+    return rbac_manager
 
 # --- Permission Endpoints ---
 

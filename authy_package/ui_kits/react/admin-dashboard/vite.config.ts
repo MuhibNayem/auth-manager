@@ -17,11 +17,15 @@ export default defineConfig({
         target: 'http://localhost:8000',
         changeOrigin: true,
       },
+      '/admin/v2': {
+        target: 'http://localhost:8000',
+        changeOrigin: true,
+      },
     },
   },
   build: {
     lib: {
-      entry: './src/index.ts',
+      entry: './src/index.tsx',
       name: 'AuthyAdminDashboard',
       fileName: (format) => `index.${format}.js`,
     },

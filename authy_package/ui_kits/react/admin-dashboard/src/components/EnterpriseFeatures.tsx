@@ -7,53 +7,51 @@
  * - Phase 4: AI Anomaly Detection, Predictive Analytics, Natural Language Queries
  */
 
-import { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from './lib/api';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogTrigger,
-} from '@/components/ui/dialog';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { LineChart, Line, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
+import { api } from '../lib/api';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { 
   ShieldAlert, 
   TrendingUp, 
   TrendingDown, 
   Activity, 
   Key, 
-  Globe, 
   Palette, 
-  FileText, 
   Search,
   Bot,
   BrainCircuit,
   MessageSquare
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion } from 'framer-motion';
+
+const Card: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardContent: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardHeader: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardTitle: React.FC<any> = ({ children, ...props }) => <h3 {...props}>{children}</h3>;
+const Button: React.FC<any> = ({ children, ...props }) => <button {...props}>{children}</button>;
+const Input: React.FC<any> = (props) => <input {...props} />;
+const Badge: React.FC<any> = ({ children, ...props }) => <span {...props}>{children}</span>;
+const Alert: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const AlertDescription: React.FC<any> = ({ children, ...props }) => <p {...props}>{children}</p>;
+const AlertTitle: React.FC<any> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
+const Table: React.FC<any> = ({ children, ...props }) => <table {...props}>{children}</table>;
+const TableBody: React.FC<any> = ({ children, ...props }) => <tbody {...props}>{children}</tbody>;
+const TableCell: React.FC<any> = ({ children, ...props }) => <td {...props}>{children}</td>;
+const TableHead: React.FC<any> = ({ children, ...props }) => <th {...props}>{children}</th>;
+const TableHeader: React.FC<any> = ({ children, ...props }) => <thead {...props}>{children}</thead>;
+const TableRow: React.FC<any> = ({ children, ...props }) => <tr {...props}>{children}</tr>;
+const Dialog: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogContent: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogHeader: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogTitle: React.FC<any> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
+const DialogTrigger: React.FC<any> = ({ children, asChild, ...props }) =>
+  asChild ? <>{children}</> : <button {...props}>{children}</button>;
+const Select: React.FC<any> = ({ children, ...props }) => <select {...props}>{children}</select>;
+const SelectContent: React.FC<any> = ({ children }) => <>{children}</>;
+const SelectItem: React.FC<any> = ({ value, children }) => <option value={value}>{children}</option>;
+const SelectTrigger: React.FC<any> = ({ children }) => <>{children}</>;
+const SelectValue: React.FC<any> = ({ placeholder }) => <>{placeholder}</>;
 
 // ============================================================================
 // TYPES
@@ -121,7 +119,8 @@ export function ApiKeyManager() {
   const createKeyMutation = useMutation({
     mutationFn: (data: { name: string; scopes: string[] }) =>
       api.post('/admin/v2/api-keys', data).then(res => res.data),
-    onSuccess: () => {
+    onSuccess: (data: { full_secret?: string }) => {
+      setShowSecret(data.full_secret ?? null);
       queryClient.invalidateQueries({ queryKey: ['apiKeys'] });
     },
   });
@@ -505,7 +504,7 @@ export function NaturalLanguageQuery() {
         <form onSubmit={handleQuery} className="flex gap-2 mb-6">
           <Input 
             value={query}
-            onChange={(e) => setQuery(e.target.value)}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setQuery(e.target.value)}
             placeholder="Try: 'Show me failed logins from yesterday' or 'How many new users this week?'"
             className="flex-1"
           />
@@ -583,32 +582,32 @@ export function AdvancedAuditSearch() {
           <Input 
             placeholder="Event Type (e.g., login.failed)" 
             value={filters.event_types}
-            onChange={e => setFilters({...filters, event_types: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, event_types: e.target.value})}
           />
           <Input 
             placeholder="Actor ID / Email" 
             value={filters.actor_id}
-            onChange={e => setFilters({...filters, actor_id: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, actor_id: e.target.value})}
           />
           <Input 
             placeholder="IP Address" 
             value={filters.ip_address}
-            onChange={e => setFilters({...filters, ip_address: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, ip_address: e.target.value})}
           />
           <Input 
             type="date"
             value={filters.date_start}
-            onChange={e => setFilters({...filters, date_start: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, date_start: e.target.value})}
           />
           <Input 
             type="date"
             value={filters.date_end}
-            onChange={e => setFilters({...filters, date_end: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, date_end: e.target.value})}
           />
           <Input 
             placeholder="Free text search..." 
             value={filters.search_text}
-            onChange={e => setFilters({...filters, search_text: e.target.value})}
+            onChange={(e: React.ChangeEvent<HTMLInputElement>) => setFilters({...filters, search_text: e.target.value})}
           />
         </div>
         

@@ -74,6 +74,22 @@ class RBACManager:
         # In production, this would load from Redis/DB
         pass
 
+    @staticmethod
+    def _serialize_role(role: Role) -> Dict[str, Any]:
+        role_data = role.__dict__.copy()
+        role_data["permissions"] = list(role.permissions)
+        role_data["created_at"] = role.created_at.isoformat()
+        role_data["updated_at"] = role.updated_at.isoformat()
+        return role_data
+
+    @staticmethod
+    def _serialize_assignment(assignment: RoleAssignment) -> Dict[str, Any]:
+        assignment_data = assignment.__dict__.copy()
+        assignment_data["scope_type"] = assignment.scope_type.value
+        assignment_data["created_at"] = assignment.created_at.isoformat()
+        assignment_data["expires_at"] = assignment.expires_at.isoformat() if assignment.expires_at else None
+        return assignment_data
+
     # --- Permission Management ---
 
     async def create_permission(self, name: str, description: str, category: str, scope: PermissionScope = PermissionScope.GLOBAL) -> Permission:
@@ -90,7 +106,7 @@ class RBACManager:
 
     # --- Role Management ---
 
-    async def create_role(self, name: str, description: str, permissions: List[str], inherits_from: Optional[str] = None, organization_id: Optional[str] = None) -> Role:
+    async def create_role(self, name: str, description: str, permissions: List[str], inherits_from: Optional[str] = None, organization_id: Optional[str] = None, is_system: bool = False) -> Role:
         role_id = f"role_{uuid.uuid4().hex[:8]}"
         
         # Validate inheritance
@@ -103,10 +119,11 @@ class RBACManager:
             description=description,
             permissions=set(permissions),
             inherits_from=inherits_from,
+            is_system=is_system,
             organization_id=organization_id
         )
         
-        await self.db.save("roles", role_id, role.__dict__)
+        await self.db.save("roles", role_id, self._serialize_role(role))
         self._role_cache[role_id] = role
         return role
 
@@ -123,7 +140,7 @@ class RBACManager:
         if permissions is not None: role.permissions = set(permissions)
         
         role.updated_at = datetime.utcnow()
-        await self.db.save("roles", role_id, role.__dict__)
+        await self.db.save("roles", role_id, self._serialize_role(role))
         self._role_cache[role_id] = role
         return role
 
@@ -167,7 +184,7 @@ class RBACManager:
             expires_at=expires_at
         )
         
-        await self.db.save("role_assignments", assignment_id, assignment.__dict__)
+        await self.db.save("role_assignments", assignment_id, self._serialize_assignment(assignment))
         return assignment
 
     async def revoke_role(self, assignment_id: str):
@@ -180,10 +197,19 @@ class RBACManager:
             "scope_type": scope_type.value,
             "scope_id": scope_id
         })
+        if not assignments:
+            assignments = await self.db.query("role_assignments", {
+                "user_id": user_id,
+                "scope_type": scope_type,
+                "scope_id": scope_id
+            })
         
         roles = []
         for assign in assignments:
-            if assign.get('expires_at') and datetime.fromisoformat(assign['expires_at']) < datetime.utcnow():
+            expires_at = assign.get('expires_at')
+            if isinstance(expires_at, str):
+                expires_at = datetime.fromisoformat(expires_at)
+            if expires_at and expires_at < datetime.utcnow():
                 continue # Expired
             
             role_id = assign['role_id']
