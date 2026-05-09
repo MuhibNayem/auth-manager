@@ -1,21 +1,28 @@
-```
+# Dependencies
+node_modules/
+
+# Build outputs
+dist/
+build/
+target/
+
 # Python
 __pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.py~
-
-# Distribution / packaging
-dist/
-build/
+.Python
+env/
+venv/
+.venv/
+.ENV
+.ENV.local
 *.egg-info/
 *.whl
 *.tar.gz
 
 # Environment
-.venv/
-venv/
 .env
 .env.local
 .env.*
@@ -23,7 +30,7 @@ venv/
 # Logs
 *.log
 
-# Editors
+# IDE
 .vscode/
 .idea/
 *.swp
@@ -31,11 +38,34 @@ venv/
 *.tmp
 
 # Coverage
-.coverage
 coverage/
 htmlcov/
+.coverage
 
 # Testing
 .pytest_cache/
 .mypy_cache/
-```
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Compressed
+*.zip
+*.gz
+*.tar
+*.tgz
+*.bz2
+*.xz
+*.7z
+*.rar
+*.zst
+*.lz4
+*.lzh
+*.cab
+*.arj
+*.rpm
+*.deb
+*.Z
+*.lz
+*.lzo
