@@ -25,33 +25,37 @@ import {
 } from 'lucide-react';
 import { motion } from 'framer-motion';
 
-const Card: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const CardContent: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const CardHeader: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const CardTitle: React.FC<any> = ({ children, ...props }) => <h3 {...props}>{children}</h3>;
-const Button: React.FC<any> = ({ children, ...props }) => <button {...props}>{children}</button>;
-const Input: React.FC<any> = (props) => <input {...props} />;
-const Badge: React.FC<any> = ({ children, ...props }) => <span {...props}>{children}</span>;
-const Alert: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const AlertDescription: React.FC<any> = ({ children, ...props }) => <p {...props}>{children}</p>;
-const AlertTitle: React.FC<any> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
-const Table: React.FC<any> = ({ children, ...props }) => <table {...props}>{children}</table>;
-const TableBody: React.FC<any> = ({ children, ...props }) => <tbody {...props}>{children}</tbody>;
-const TableCell: React.FC<any> = ({ children, ...props }) => <td {...props}>{children}</td>;
-const TableHead: React.FC<any> = ({ children, ...props }) => <th {...props}>{children}</th>;
-const TableHeader: React.FC<any> = ({ children, ...props }) => <thead {...props}>{children}</thead>;
-const TableRow: React.FC<any> = ({ children, ...props }) => <tr {...props}>{children}</tr>;
-const Dialog: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const DialogContent: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const DialogHeader: React.FC<any> = ({ children, ...props }) => <div {...props}>{children}</div>;
-const DialogTitle: React.FC<any> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
-const DialogTrigger: React.FC<any> = ({ children, asChild, ...props }) =>
+type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: string; size?: string };
+type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & { name?: string };
+type DialogTriggerProps = React.ButtonHTMLAttributes<HTMLButtonElement> & { asChild?: boolean };
+
+const Card: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardContent: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardHeader: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const CardTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, ...props }) => <h3 {...props}>{children}</h3>;
+const Button: React.FC<ButtonProps> = ({ children, variant: _variant, size: _size, ...props }) => <button {...props}>{children}</button>;
+const Input: React.FC<React.InputHTMLAttributes<HTMLInputElement>> = (props) => <input {...props} />;
+const Badge: React.FC<React.HTMLAttributes<HTMLSpanElement> & { variant?: string }> = ({ children, variant: _variant, ...props }) => <span {...props}>{children}</span>;
+const Alert: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const AlertDescription: React.FC<React.HTMLAttributes<HTMLParagraphElement>> = ({ children, ...props }) => <p {...props}>{children}</p>;
+const AlertTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
+const Table: React.FC<React.TableHTMLAttributes<HTMLTableElement>> = ({ children, ...props }) => <table {...props}>{children}</table>;
+const TableBody: React.FC<React.HTMLAttributes<HTMLTableSectionElement>> = ({ children, ...props }) => <tbody {...props}>{children}</tbody>;
+const TableCell: React.FC<React.TdHTMLAttributes<HTMLTableCellElement>> = ({ children, ...props }) => <td {...props}>{children}</td>;
+const TableHead: React.FC<React.ThHTMLAttributes<HTMLTableCellElement>> = ({ children, ...props }) => <th {...props}>{children}</th>;
+const TableHeader: React.FC<React.HTMLAttributes<HTMLTableSectionElement>> = ({ children, ...props }) => <thead {...props}>{children}</thead>;
+const TableRow: React.FC<React.HTMLAttributes<HTMLTableRowElement>> = ({ children, ...props }) => <tr {...props}>{children}</tr>;
+const Dialog: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogContent: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogHeader: React.FC<React.HTMLAttributes<HTMLDivElement>> = ({ children, ...props }) => <div {...props}>{children}</div>;
+const DialogTitle: React.FC<React.HTMLAttributes<HTMLHeadingElement>> = ({ children, ...props }) => <h4 {...props}>{children}</h4>;
+const DialogTrigger: React.FC<DialogTriggerProps> = ({ children, asChild, ...props }) =>
   asChild ? <>{children}</> : <button {...props}>{children}</button>;
-const Select: React.FC<any> = ({ children, ...props }) => <select {...props}>{children}</select>;
-const SelectContent: React.FC<any> = ({ children }) => <>{children}</>;
-const SelectItem: React.FC<any> = ({ value, children }) => <option value={value}>{children}</option>;
-const SelectTrigger: React.FC<any> = ({ children }) => <>{children}</>;
-const SelectValue: React.FC<any> = ({ placeholder }) => <>{placeholder}</>;
+const Select: React.FC<SelectProps> = ({ children, ...props }) => <select {...props}>{children}</select>;
+const SelectContent: React.FC<{ children?: React.ReactNode }> = ({ children }) => <>{children}</>;
+const SelectItem: React.FC<{ value: string; children?: React.ReactNode }> = ({ value, children }) => <option value={value}>{children}</option>;
+const SelectTrigger: React.FC<{ children?: React.ReactNode }> = ({ children }) => <>{children}</>;
+const SelectValue: React.FC<{ placeholder?: string }> = ({ placeholder }) => <>{placeholder}</>;
 
 // ============================================================================
 // TYPES
