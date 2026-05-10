@@ -49,7 +49,7 @@ class Settings(BaseSettings):
     
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
-    def model_post_init(self, __context) -> None:
+    def model_post_init(self, _context) -> None:
         """Validate security-sensitive settings."""
         if self.SECRET_KEY:
             return

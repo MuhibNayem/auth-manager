@@ -966,7 +966,7 @@ async def scim_patch_user(
     return updated_user
 
 
-@app.delete("/scim/v2/Users/{user_id}", tags=["SCIM"], status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/scim/v2/Users/{user_id}", tags=["SCIM"])
 async def scim_delete_user(
     user_id: str,
     _: None = Depends(require_scim_auth),
@@ -1014,7 +1014,7 @@ async def scim_get_group(
     return group
 
 
-@app.delete("/scim/v2/Groups/{group_id}", tags=["SCIM"], status_code=status.HTTP_204_NO_CONTENT)
+@app.delete("/scim/v2/Groups/{group_id}", tags=["SCIM"])
 async def scim_delete_group(
     group_id: str,
     _: None = Depends(require_scim_auth),

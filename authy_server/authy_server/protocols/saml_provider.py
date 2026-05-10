@@ -268,15 +268,10 @@ class SAMLProvider:
         """
         # Decode signature
         try:
+            # We currently only validate that the signature is well-formed base64.
             _ = base64.b64decode(signature)
         except Exception:
             return False
-        
-        # Reconstruct signed string
-        _ = f"SAMLRequest={saml_request}"
-        if relay_state:
-            _ += f"&RelayState={relay_state}"
-        _ += f"&SigAlg={sig_alg}"
 
         # Fail closed until real signature verification is implemented.
         return False
