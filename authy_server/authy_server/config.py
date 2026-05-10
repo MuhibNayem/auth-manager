@@ -5,7 +5,7 @@ Environment-based configuration for production deployments.
 """
 import os
 from typing import List, Optional
-from pydantic import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -18,7 +18,7 @@ class Settings(BaseSettings):
     BASE_URL: str = os.getenv("AUTHY_BASE_URL", "http://localhost:8000")
     
     # Security
-    SECRET_KEY: str = os.getenv("AUTHY_SECRET_KEY", "dev-secret-key-change-in-production")
+    SECRET_KEY: Optional[str] = os.getenv("AUTHY_SECRET_KEY")
     JWT_ALGORITHM: str = "RS256"
     JWT_EXPIRY_SECONDS: int = int(os.getenv("AUTHY_JWT_EXPIRY", "3600"))
     REFRESH_TOKEN_EXPIRY_DAYS: int = int(os.getenv("AUTHY_REFRESH_EXPIRY", "30"))
@@ -47,9 +47,16 @@ class Settings(BaseSettings):
     # Rate Limiting
     RATE_LIMIT_PER_MINUTE: int = int(os.getenv("AUTHY_RATE_LIMIT", "100"))
     
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
+
+    def model_post_init(self, __context) -> None:
+        """Validate security-sensitive settings."""
+        if self.SECRET_KEY:
+            return
+        if self.DEBUG:
+            self.SECRET_KEY = "dev-secret-key-change-in-production"
+            return
+        raise ValueError("AUTHY_SECRET_KEY must be set when AUTHY_DEBUG is false")
 
 
 settings = Settings()

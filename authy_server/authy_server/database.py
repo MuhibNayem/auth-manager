@@ -1,11 +1,8 @@
 """
 Authy Identity Server Database Layer
 
-Database abstraction supporting multiple backends:
-- PostgreSQL (recommended for production)
-- MySQL
-- SQLite (development)
-- MongoDB (coming soon)
+Database abstraction for PostgreSQL schema management.
+The current SQL schema uses PostgreSQL-specific types/functions.
 """
 from typing import Optional, Any
 from datetime import datetime

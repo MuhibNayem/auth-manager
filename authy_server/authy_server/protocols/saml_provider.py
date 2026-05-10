@@ -11,6 +11,7 @@ Complete SAML 2.0 IdP functionality:
 """
 import base64
 import zlib
+from html import escape as html_escape
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, Tuple
 from lxml import etree
@@ -71,6 +72,13 @@ class SAMLProvider:
         """Get certificate in base64 format (placeholder)."""
         # In production, load from config or HSM
         return "MIIDXTCCAkWgAwIBAgIJAKL0UG+mRKSzMA0GCSqGSIb3DQEBCwUAMEUxCzAJBgNV..."
+
+    @staticmethod
+    def _user_value(user: Any, key: str, default: str = "") -> str:
+        """Safely read user attributes from dicts or objects."""
+        if isinstance(user, dict):
+            return str(user.get(key, default) or default)
+        return str(getattr(user, key, default) or default)
     
     async def parse_authn_request(self, saml_request: str) -> Dict[str, Any]:
         """
@@ -105,10 +113,8 @@ class SAMLProvider:
                 "is_passive": root.get("IsPassive", "false").lower() == "true",
             }
             
-            # Extract AssertionConsumerServiceURL
-            acs = root.find(".//{urn:oasis:names:tc:SAML:2.0:protocol}AssertionConsumerServiceURL")
-            if acs is not None:
-                request_data["acs_url"] = acs.text
+            # Extract AssertionConsumerServiceURL (AuthnRequest attribute)
+            request_data["acs_url"] = root.get("AssertionConsumerServiceURL")
             
             # Validate required fields
             if not request_data["id"]:
@@ -145,6 +151,10 @@ class SAMLProvider:
         acs_url = request_data["acs_url"]
         issuer = request_data["issuer"]
         
+        user_email = html_escape(self._user_value(user, "email"), quote=True)
+        user_first_name = html_escape(self._user_value(user, "first_name"), quote=True)
+        user_last_name = html_escape(self._user_value(user, "last_name"), quote=True)
+
         # Create SAML Response XML
         response_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <samlp:Response xmlns:samlp="urn:oasis:names:tc:SAML:2.0:protocol"
@@ -165,7 +175,7 @@ class SAMLProvider:
                     IssueInstant="{now.isoformat()}Z">
         <saml:Issuer>{self.entity_id}</saml:Issuer>
         <saml:Subject>
-            <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{user.email}</saml:NameID>
+            <saml:NameID Format="urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress">{user_email}</saml:NameID>
             <saml:SubjectConfirmation Method="urn:oasis:names:tc:SAML:2.0:cm:bearer">
                 <saml:SubjectConfirmationData Recipient="{acs_url}"
                                               InResponseTo="{request_data['id']}"
@@ -186,16 +196,16 @@ class SAMLProvider:
         </saml:AuthnStatement>
         <saml:AttributeStatement>
             <saml:Attribute Name="email" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri">
-                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{user.email}</saml:AttributeValue>
+                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{user_email}</saml:AttributeValue>
             </saml:Attribute>
             <saml:Attribute Name="given_name" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri">
-                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{getattr(user, 'first_name', '')}</saml:AttributeValue>
+                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{user_first_name}</saml:AttributeValue>
             </saml:Attribute>
             <saml:Attribute Name="surname" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri">
-                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{getattr(user, 'last_name', '')}</saml:AttributeValue>
+                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{user_last_name}</saml:AttributeValue>
             </saml:Attribute>
             <saml:Attribute Name="name" NameFormat="urn:oasis:names:tc:SAML:2.0:attrname-format:uri">
-                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{getattr(user, 'first_name', '')} {getattr(user, 'last_name', '')}</saml:AttributeValue>
+                <saml:AttributeValue xmlns:xs="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:type="xs:string">{user_first_name} {user_last_name}</saml:AttributeValue>
             </saml:Attribute>
         </saml:AttributeStatement>
     </saml:Assertion>
@@ -205,13 +215,18 @@ class SAMLProvider:
         signed_response = await self._sign_response(response_xml)
         
         # Create HTML form for auto-submit
+        relay_input = ""
+        if relay_state:
+            relay_input = (
+                f"<input type='hidden' name='RelayState' value='{html_escape(relay_state, quote=True)}'/>"
+            )
         html_form = f"""<!DOCTYPE html>
 <html>
 <head><title>SAML Response</title></head>
 <body onload="document.forms[0].submit()">
-    <form method="post" action="{acs_url}">
-        <input type="hidden" name="SAMLResponse" value="{base64.b64encode(signed_response.encode()).decode()}"/>
-        {"<input type='hidden' name='RelayState' value='" + relay_state + "'/>" if relay_state else ""}
+    <form method="post" action="{html_escape(acs_url, quote=True)}">
+        <input type="hidden" name="SAMLResponse" value="{html_escape(base64.b64encode(signed_response.encode()).decode(), quote=True)}"/>
+        {relay_input}
         <noscript>
             <p>SAML is enabled but JavaScript is disabled. Please enable JavaScript and click Submit.</p>
             <button type="submit">Submit</button>
@@ -253,20 +268,18 @@ class SAMLProvider:
         """
         # Decode signature
         try:
-            sig_bytes = base64.b64decode(signature)
+            _ = base64.b64decode(signature)
         except Exception:
             return False
         
         # Reconstruct signed string
-        params = f"SAMLRequest={saml_request}"
+        _ = f"SAMLRequest={saml_request}"
         if relay_state:
-            params += f"&RelayState={relay_state}"
-        params += f"&SigAlg={sig_alg}"
-        
-        # Verify signature using SP's public key
-        # (In production, fetch from SP metadata)
-        # This is a placeholder
-        return True
+            _ += f"&RelayState={relay_state}"
+        _ += f"&SigAlg={sig_alg}"
+
+        # Fail closed until real signature verification is implemented.
+        return False
     
     async def process_logout_request(self, saml_request: str) -> Dict[str, Any]:
         """Process SAML Single Logout Request."""

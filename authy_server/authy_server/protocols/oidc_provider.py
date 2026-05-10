@@ -47,6 +47,7 @@ class OIDCProvider:
     
     async def _rotate_keys(self):
         """Rotate signing keys (production would use HSM)."""
+        now = datetime.utcnow()
         # Generate RSA key pair (RS256)
         rsa_private_key = rsa.generate_private_key(
             public_exponent=65537,

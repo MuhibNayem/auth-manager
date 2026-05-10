@@ -39,6 +39,7 @@ python = "^3.9"
 fastapi = "^0.109.0"
 uvicorn = {extras = ["standard"], version = "^0.27.0"}
 pydantic = "^2.5.0"
+pydantic-settings = "^2.2.1"
 pyjwt = "^2.8.0"
 cryptography = "^42.0.0"
 python-multipart = "^0.0.6"
@@ -64,7 +65,7 @@ requires = ["poetry-core"]
 build-backend = "poetry.core.masonry.api"
 
 [tool.poetry.scripts]
-authy-server = "authy_server.main:app"
+authy-server = "authy_server.main:main"
 
 [tool.black]
 line-length = 100

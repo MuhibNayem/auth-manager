@@ -13,7 +13,11 @@ Competitor to Keycloak, Okta, and Auth0.
 """
 import os
 import sys
+import secrets
+from datetime import datetime
+from html import escape as html_escape
 from pathlib import Path
+from urllib.parse import urlencode
 
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -93,6 +97,27 @@ auth_service = AuthService()
 token_service = TokenService()
 client_service = ClientService()
 user_service = UserService()
+
+
+async def require_scim_auth(request: Request) -> None:
+    """Require bearer-token authentication for SCIM endpoints."""
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Missing or invalid SCIM bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    token = auth_header.split(" ", 1)[1]
+    expected_token = os.getenv("AUTHY_SCIM_BEARER_TOKEN") or settings.SECRET_KEY
+    if not expected_token:
+        raise HTTPException(status_code=503, detail="SCIM authentication is not configured")
+    if not secrets.compare_digest(token, expected_token):
+        raise HTTPException(
+            status_code=401,
+            detail="Invalid SCIM bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 
 @app.on_event("startup")
@@ -273,7 +298,7 @@ async def authorize(
         )
     
     # Validate redirect_uri against registered URIs
-    if redirect_uri not in client.redirect_uris:
+    if redirect_uri not in client["redirect_uris"]:
         raise HTTPException(
             status_code=400,
             detail={"error": "invalid_redirect_uri", "error_description": "Redirect URI not registered"}
@@ -297,7 +322,7 @@ async def authorize(
         )
     
     # Check PKCE requirement for public clients
-    if client.client_type == "public" and not code_challenge:
+    if client.get("client_type") == "public" and not code_challenge:
         raise HTTPException(
             status_code=400,
             detail={
@@ -368,7 +393,7 @@ async def complete_authorization(
     if auth_request.get("state"):
         redirect_params["state"] = auth_request["state"]
     
-    redirect_url = f"{auth_request['redirect_uri']}?{'&'.join(f'{k}={v}' for k, v in redirect_params.items())}"
+    redirect_url = f"{auth_request['redirect_uri']}?{urlencode(redirect_params)}"
     
     return RedirectResponse(url=redirect_url)
 
@@ -434,7 +459,7 @@ async def token_endpoint(
         
         elif grant_type == "password":
             # Only allowed for confidential clients with explicit permission
-            if client.client_type != "confidential":
+            if client.get("client_type") != "confidential":
                 raise HTTPException(
                     status_code=400,
                     detail={"error": "unauthorized_client", "error_description": "Password grant not allowed"}
@@ -487,7 +512,7 @@ async def handle_authorization_code_grant(
     # Exchange code for tokens
     tokens = await token_service.exchange_authorization_code(
         code=code,
-        client_id=client.client_id,
+        client_id=client["client_id"],
         redirect_uri=redirect_uri,
     )
     
@@ -505,7 +530,7 @@ async def handle_refresh_token_grant(
     
     tokens = await token_service.refresh_tokens(
         refresh_token=refresh_token,
-        client_id=client.client_id,
+        client_id=client["client_id"],
         scope=scope,
     )
     
@@ -518,8 +543,8 @@ async def handle_client_credentials_grant(
 ) -> JSONResponse:
     """Handle client_credentials grant type (M2M)."""
     access_token = await token_service.create_access_token(
-        subject=client.client_id,
-        audience=client.client_id,
+        subject=client["client_id"],
+        audience=client["client_id"],
         scope=scope or "api:read",
         token_type="bearer",
     )
@@ -552,8 +577,8 @@ async def handle_password_grant(
     
     # Create tokens
     access_token = await token_service.create_access_token(
-        subject=user.id,
-        audience=client.client_id,
+        subject=user["id"],
+        audience=client["client_id"],
         scope=scope or "openid profile",
     )
     
@@ -601,7 +626,7 @@ async def handle_token_exchange(
         subject_token=subject_token,
         subject_token_type=subject_token_type,
         requested_token_type=requested_token_type,
-        client_id=client.client_id,
+        client_id=client["client_id"],
     )
     
     return JSONResponse(content=exchanged_tokens)
@@ -635,18 +660,24 @@ async def userinfo_endpoint(request: Request):
             raise HTTPException(status_code=404, detail={"error": "user_not_found"})
         
         # Return OIDC standard claims
+        updated_at = user.get("updated_at")
+        updated_at_ts = (
+            int(updated_at.timestamp())
+            if hasattr(updated_at, "timestamp")
+            else int(datetime.utcnow().timestamp())
+        )
         return {
-            "sub": user.id,
-            "name": f"{user.first_name} {user.last_name}".strip(),
-            "given_name": user.first_name,
-            "family_name": user.last_name,
-            "email": user.email,
-            "email_verified": user.is_email_verified,
-            "picture": user.avatar_url,
-            "locale": user.locale or "en",
-            "updated_at": int(user.updated_at.timestamp()),
+            "sub": user["id"],
+            "name": f"{user.get('first_name', '')} {user.get('last_name', '')}".strip(),
+            "given_name": user.get("first_name"),
+            "family_name": user.get("last_name"),
+            "email": user.get("email"),
+            "email_verified": user.get("is_email_verified", False),
+            "picture": user.get("avatar_url"),
+            "locale": user.get("locale") or "en",
+            "updated_at": updated_at_ts,
             # Custom claims
-            "organizations": user.organizations if hasattr(user, "organizations") else [],
+            "organizations": user.get("organizations", []),
         }
     
     except Exception as e:
@@ -669,7 +700,7 @@ async def dynamic_client_registration(request: Request):
         client = await client_service.register_client(data)
         
         return JSONResponse(
-            content=client.to_dict(),
+            content=client,
             status_code=201,
         )
     except Exception as e:
@@ -770,16 +801,19 @@ async def saml_login_page(
     """Render SAML login page."""
     # In production, this would render an HTML template
     # For now, return a simple form
+    safe_issuer = html_escape(issuer or "", quote=True)
+    safe_saml_request = html_escape(saml_request, quote=True)
+    safe_relay_state = html_escape(relay_state or "", quote=True)
     html = f"""
     <!DOCTYPE html>
     <html>
     <head><title>Authy SAML Login</title></head>
     <body>
         <h1>SAML Single Sign-On</h1>
-        <p>Identity Provider: {issuer}</p>
+        <p>Identity Provider: {safe_issuer}</p>
         <form method="post" action="/saml/login/submit">
-            <input type="hidden" name="SAMLRequest" value="{saml_request}">
-            <input type="hidden" name="RelayState" value="{relay_state or ''}">
+            <input type="hidden" name="SAMLRequest" value="{safe_saml_request}">
+            <input type="hidden" name="RelayState" value="{safe_relay_state}">
             <label>Email: <input type="email" name="email" required></label><br><br>
             <label>Password: <input type="password" name="password" required></label><br><br>
             <button type="submit">Sign In</button>
@@ -862,6 +896,7 @@ async def scim_get_users(
     filter: Optional[str] = Query(None),
     sortBy: Optional[str] = Query(None),
     sortOrder: str = Query("ascending"),
+    _: None = Depends(require_scim_auth),
 ):
     """
     SCIM 2.0 Get Users
@@ -880,7 +915,10 @@ async def scim_get_users(
 
 
 @app.post("/scim/v2/Users", tags=["SCIM"])
-async def scim_create_user(user_data: Dict[str, Any]):
+async def scim_create_user(
+    user_data: Dict[str, Any],
+    _: None = Depends(require_scim_auth),
+):
     """
     SCIM 2.0 Create User
     
@@ -891,7 +929,10 @@ async def scim_create_user(user_data: Dict[str, Any]):
 
 
 @app.get("/scim/v2/Users/{user_id}", tags=["SCIM"])
-async def scim_get_user(user_id: str):
+async def scim_get_user(
+    user_id: str,
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Get User by ID."""
     user = await scim_provider.get_user(user_id)
     if not user:
@@ -900,14 +941,22 @@ async def scim_get_user(user_id: str):
 
 
 @app.put("/scim/v2/Users/{user_id}", tags=["SCIM"])
-async def scim_update_user(user_id: str, user_data: Dict[str, Any]):
+async def scim_update_user(
+    user_id: str,
+    user_data: Dict[str, Any],
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Update User (Replace)."""
     updated_user = await scim_provider.update_user(user_id, user_data, replace=True)
     return updated_user
 
 
 @app.patch("/scim/v2/Users/{user_id}", tags=["SCIM"])
-async def scim_patch_user(user_id: str, operations: Dict[str, Any]):
+async def scim_patch_user(
+    user_id: str,
+    operations: Dict[str, Any],
+    _: None = Depends(require_scim_auth),
+):
     """
     SCIM 2.0 Patch User
     
@@ -917,11 +966,14 @@ async def scim_patch_user(user_id: str, operations: Dict[str, Any]):
     return updated_user
 
 
-@app.delete("/scim/v2/Users/{user_id}", tags=["SCIM"])
-async def scim_delete_user(user_id: str):
+@app.delete("/scim/v2/Users/{user_id}", tags=["SCIM"], status_code=status.HTTP_204_NO_CONTENT)
+async def scim_delete_user(
+    user_id: str,
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Delete User."""
     await scim_provider.delete_user(user_id)
-    return {}, 204
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/scim/v2/Groups", tags=["SCIM"])
@@ -929,6 +981,7 @@ async def scim_get_groups(
     startIndex: int = Query(1, ge=1),
     count: int = Query(10, ge=1, le=100),
     filter: Optional[str] = Query(None),
+    _: None = Depends(require_scim_auth),
 ):
     """SCIM 2.0 Get Groups."""
     groups = await scim_provider.list_groups(
@@ -940,14 +993,20 @@ async def scim_get_groups(
 
 
 @app.post("/scim/v2/Groups", tags=["SCIM"])
-async def scim_create_group(group_data: Dict[str, Any]):
+async def scim_create_group(
+    group_data: Dict[str, Any],
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Create Group."""
     new_group = await scim_provider.create_group(group_data)
     return JSONResponse(content=new_group, status_code=201)
 
 
 @app.get("/scim/v2/Groups/{group_id}", tags=["SCIM"])
-async def scim_get_group(group_id: str):
+async def scim_get_group(
+    group_id: str,
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Get Group by ID."""
     group = await scim_provider.get_group(group_id)
     if not group:
@@ -955,27 +1014,36 @@ async def scim_get_group(group_id: str):
     return group
 
 
-@app.delete("/scim/v2/Groups/{group_id}", tags=["SCIM"])
-async def scim_delete_group(group_id: str):
+@app.delete("/scim/v2/Groups/{group_id}", tags=["SCIM"], status_code=status.HTTP_204_NO_CONTENT)
+async def scim_delete_group(
+    group_id: str,
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Delete Group."""
     await scim_provider.delete_group(group_id)
-    return {}, 204
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @app.get("/scim/v2/ServiceProviderConfig", tags=["SCIM"])
-async def scim_service_provider_config():
+async def scim_service_provider_config(
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Service Provider Configuration."""
     return scim_provider.get_sp_config()
 
 
 @app.get("/scim/v2/ResourceTypes", tags=["SCIM"])
-async def scim_resource_types():
+async def scim_resource_types(
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Resource Types."""
     return scim_provider.get_resource_types()
 
 
 @app.get("/scim/v2/Schemas", tags=["SCIM"])
-async def scim_schemas():
+async def scim_schemas(
+    _: None = Depends(require_scim_auth),
+):
     """SCIM 2.0 Schemas."""
     return scim_provider.get_schemas()
 
@@ -1042,7 +1110,8 @@ authy_tokens_issued_total{{type="refresh"}} 0
 """
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """CLI entrypoint for starting the Authy server."""
     uvicorn.run(
         "authy_server.main:app",
         host="0.0.0.0",
@@ -1050,3 +1119,7 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         workers=settings.WORKERS,
     )
+
+
+if __name__ == "__main__":
+    main()
