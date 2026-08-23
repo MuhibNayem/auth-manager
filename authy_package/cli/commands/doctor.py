@@ -133,10 +133,15 @@ async def collect_checks() -> Tuple[List[Tuple[str, bool, str]], int]:
         rows.append(("Core import", False, f"import failed: {exc}"))
         return rows, sum(1 for _, ok, _ in rows if not ok)
 
-    # 3. Optional extras
-    for label, modules in OPTIONAL_EXTRAS:
-        ok, detail = _probe_modules(modules)
-        rows.append((f"Extra: {label}", ok, detail))
+    # 3. Optional extras — reported present/missing; a missing OPTIONAL extra
+    #    is information, not a failure.
+    for extra_label, modules in OPTIONAL_EXTRAS:
+        present, detail = _probe_modules(modules)
+        rows.append((
+            f"Extra: {extra_label}",
+            True,
+            detail if present else f"missing (optional) — {detail}",
+        ))
 
     # 4. Config validation
     try:

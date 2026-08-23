@@ -140,7 +140,10 @@ async def get_connected_db(config: Optional[Any] = None):
         except Exception:
             return None
 
-    db_type = getattr(getattr(config, "database", None), "db_type", None)
+    db_config = getattr(config, "database", None)
+    db_type = getattr(db_config, "db_type", None)
+    if db_type != "memory" and not getattr(db_config, "connection_string", ""):
+        return None  # not configured: nothing to connect to (§9 honesty)
     try:
         if db_type == "memory":
             db = _memory_dbs.get("memory")

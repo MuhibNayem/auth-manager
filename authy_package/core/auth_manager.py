@@ -185,7 +185,8 @@ class TraditionalAuthManager:
         Returns the (possibly refreshed) user record on success, else None.
         The timing path is equalized for missing users (§6).
         """
-        if user is not None and user.get("password_algorithm"):
+        algorithm = str(user.get("password_algorithm") or "") if user else ""
+        if algorithm and algorithm.lower() not in ("bcrypt", "argon2"):
             from authy_package.migration import verify_and_upgrade_legacy_hash
 
             upgraded = await verify_and_upgrade_legacy_hash(user, password, self.db)
@@ -266,25 +267,47 @@ class TraditionalAuthManager:
             "user": sanitize_user(authenticated_user),
         }
 
-        tokens = await self._issue_token_pair(user_id)
-        if tokens:
-            response["access_token"] = tokens["access_token"]
-            response["refresh_token"] = tokens["refresh_token"]
-
+        session_id: Optional[str] = None
         if self.session_manager is not None:
             session = await self.session_manager.create_session(
                 user_id, device_info={"auth_method": "password"}
             )
-            response["session_id"] = session.id
+            session_id = session.id
+            response["session_id"] = session_id
+
+        tokens = await self._issue_token_pair(user_id, session_id=session_id)
+        if tokens:
+            response["access_token"] = tokens["access_token"]
+            response["refresh_token"] = tokens["refresh_token"]
         return response
 
     # -- tokens -----------------------------------------------------------------
 
-    async def _issue_token_pair(self, user_id: str) -> Optional[Dict[str, str]]:
-        """Issue a JWT pair and record it under the §3.1 cache keys."""
+    async def _issue_token_pair(
+        self, user_id: str, session_id: Optional[str] = None
+    ) -> Optional[Dict[str, str]]:
+        """Issue a JWT pair and record it under the §3.1 cache keys.
+
+        The access token carries ``session_id`` when a session was created
+        so logout can revoke exactly that session.
+        """
         if self.token_manager is None:
             return None
-        tokens = self.token_manager.create_token_pair(user_id)
+        import secrets as _secrets
+
+        access_jti = _secrets.token_urlsafe(16)
+        refresh_jti = _secrets.token_urlsafe(16)
+        additional = {"session_id": session_id} if session_id else None
+        tokens = {
+            "access_token": self.token_manager.create_access_token(
+                user_id, additional_claims=additional, jti=access_jti
+            ),
+            "refresh_token": self.token_manager.create_refresh_token(
+                user_id, jti=refresh_jti
+            ),
+            "access_jti": access_jti,
+            "refresh_jti": refresh_jti,
+        }
         if self.cache is not None:
             await self.cache.set(
                 REFRESH_LEDGER_KEY_TEMPLATE.format(jti=tokens["refresh_jti"]),

@@ -387,6 +387,7 @@ class SAMLManager:
         key = xmlsec.Key.from_memory(private_pem, xmlsec.KeyFormat.PEM)
         ctx = xmlsec.SignatureContext()
         ctx.key = key
+        ctx.register_id(root_element, id_attr="ID")
         ctx.sign(signature_template)
 
     async def create_auth_request(
@@ -484,9 +485,14 @@ class SAMLManager:
         ctx = xmlsec.SignatureContext()
         ctx.key = xmlsec.Key.from_memory(
             certificate.public_bytes(serialization.Encoding.PEM),
-            xmlsec.KeyFormat.PEM,
-            xmlsec.KeyDataType.CERTIFICATE,
+            xmlsec.KeyFormat.CERT_PEM,
         )
+        # Register ID attributes so Reference URIs (#ID) resolve.
+        node = sig_node.getparent()
+        while node is not None:
+            if node.get("ID"):
+                ctx.register_id(node, id_attr="ID")
+            node = node.getparent()
         try:
             ctx.verify(sig_node)
         except Exception as exc:

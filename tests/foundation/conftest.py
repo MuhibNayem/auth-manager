@@ -53,7 +53,11 @@ def _make_config(**overrides: Any) -> AuthConfig:
     """
     kwargs: dict[str, Any] = dict(
         env="development",
-        jwt_secret=secrets.token_urlsafe(32),
+        # token_hex(32) is provably marker-safe: every placeholder marker in
+        # AuthConfig.validate() contains a non-hex character, so a pure
+        # [0-9a-f] secret can never be flagged as a placeholder (token_urlsafe
+        # could rarely emit e.g. 'xxx', flaking validate()). 256-bit entropy.
+        jwt_secret=secrets.token_hex(32),
         bcrypt_rounds=4,
         database=DatabaseConfig(db_type="memory"),
         cache=CacheConfig(enabled=False),

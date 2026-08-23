@@ -45,18 +45,22 @@ __all__ = [
 # combination of missing optional deps imports cleanly.
 HCAPTCHA_AVAILABLE = False
 try:
+    from .hcaptcha_provider import HTTPX_AVAILABLE as _HC_HTTPX
     from .hcaptcha_provider import hCaptchaConfig, hCaptchaProvider
 except ImportError:
     pass
 else:
-    HCAPTCHA_AVAILABLE = True
-    __all__ += ["hCaptchaProvider", "hCaptchaConfig"]
+    HCAPTCHA_AVAILABLE = bool(_HC_HTTPX)
+    if HCAPTCHA_AVAILABLE:
+        __all__ += ["hCaptchaProvider", "hCaptchaConfig"]
 
 RECAPTCHA_AVAILABLE = False
 try:
+    from .recaptcha_provider import HTTPX_AVAILABLE as _RC_HTTPX
     from .recaptcha_provider import ReCaptchaConfig, ReCaptchaProvider
 except ImportError:
     pass
 else:
-    RECAPTCHA_AVAILABLE = True
-    __all__ += ["ReCaptchaProvider", "ReCaptchaConfig"]
+    RECAPTCHA_AVAILABLE = bool(_RC_HTTPX)
+    if RECAPTCHA_AVAILABLE:
+        __all__ += ["ReCaptchaProvider", "ReCaptchaConfig"]

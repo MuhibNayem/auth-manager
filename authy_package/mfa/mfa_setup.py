@@ -159,19 +159,24 @@ class MFAAuthManager:
             ttl_seconds=PENDING_SECRET_TTL_SECONDS,
         )
 
-    async def _take_pending_secret(self, user_id: str) -> Optional[str]:
-        """Fetch-and-delete the pending secret (single consumption)."""
+    async def _peek_pending_secret(self, user_id: str) -> Optional[str]:
+        """Read the pending secret without consuming it."""
         import json
 
-        key = self._pending_key(user_id)
-        raw = await self.cache.get(key)
+        raw = await self.cache.get(self._pending_key(user_id))
         if raw is None:
             return None
-        await self.cache.delete(key)
         try:
             return str(json.loads(raw).get("secret")) or None
         except (TypeError, ValueError):
             return None
+
+    async def _take_pending_secret(self, user_id: str) -> Optional[str]:
+        """Fetch-and-delete the pending secret (single consumption)."""
+        secret = await self._peek_pending_secret(user_id)
+        if secret is not None:
+            await self.cache.delete(self._pending_key(user_id))
+        return secret
 
     async def _begin_setup(
         self,
@@ -262,15 +267,19 @@ class MFAAuthManager:
         user_id = str(user["id"])
 
         await self._check_attempt_budget(user_id)
-        pending_secret = await self._take_pending_secret(user_id)
+        pending_secret = await self._peek_pending_secret(user_id)
         if not pending_secret:
             raise AuthenticationError(
                 "No pending MFA setup; call setup_mfa first", code="mfa_setup_pending_missing"
             )
 
         if not pyotp.TOTP(pending_secret).verify(code, valid_window=1):
+            # Keep the pending secret so the user can retry within the
+            # attempt budget; the counter provides the rate limit.
             await self._record_failed_attempt(user_id)
             raise AuthenticationError("Invalid MFA code", code="mfa_code_invalid")
+
+        await self.cache.delete(self._pending_key(user_id))
 
         backup_codes = [secrets.token_hex(4) for _ in range(BACKUP_CODE_COUNT)]
         updates: Dict[str, Any] = {

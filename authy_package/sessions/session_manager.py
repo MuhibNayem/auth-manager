@@ -18,6 +18,7 @@ Rebuilt per CONTRACTS.md §2/§3/§6:
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import secrets
 from dataclasses import dataclass, field
@@ -37,6 +38,7 @@ __all__ = ["Session", "SessionManager"]
 #: §3.1 cache key schema.
 SESSION_KEY_TEMPLATE = "authy:session:{session_id}"
 USER_SESSIONS_KEY_TEMPLATE = "authy:user_sessions:{user_id}"
+REFRESH_MAP_KEY_TEMPLATE = "authy:session_refresh:{token_hash}"
 
 
 def _utcnow() -> datetime:
@@ -221,18 +223,19 @@ class SessionManager:
         except TokenError:
             return None
 
-        session_id = payload.get("session_id")
         user_id = payload.get("sub")
-        if not session_id or not user_id:
+        if not user_id:
             return None
 
-        session = await self._get_session(str(session_id))
+        session = await self._resolve_session_for_refresh(refresh_token, str(user_id))
         if session is None or session.is_revoked:
-            return None
-        if str(user_id) != session.user_id:
             return None
         if session.expires_at <= _utcnow():
             return None
+
+        # Rotation: the old refresh token stops working immediately.
+        if self.cache is not None:
+            await self.cache.delete(self._refresh_map_key(refresh_token))
 
         now = _utcnow()
         session.expires_at = now + timedelta(seconds=self.config.session_expiry_seconds)
@@ -272,14 +275,25 @@ class SessionManager:
     # -- internals -----------------------------------------------------------------
 
     def _issue_session_tokens(self, user_id: str, session_id: str) -> tuple:
-        """Issue the session-bound access/refresh JWT pair."""
+        """Issue the session-bound access/refresh JWT pair.
+
+        The access token carries the ``session_id`` claim; the frozen
+        ``create_refresh_token`` API takes no extra claims, so the refresh
+        token is bound to the session through the
+        ``authy:session_refresh:{sha256(token)}`` cache ledger (with a db
+        record fallback when no cache is configured).
+        """
         access_token = self.token_manager.create_access_token(
             user_id, additional_claims={"session_id": session_id}
         )
-        refresh_token = self.token_manager.create_refresh_token(
-            user_id, additional_claims={"session_id": session_id}
-        )
+        refresh_token = self.token_manager.create_refresh_token(user_id)
         return access_token, refresh_token
+
+    @staticmethod
+    def _refresh_map_key(refresh_token: str) -> str:
+        return REFRESH_MAP_KEY_TEMPLATE.format(
+            token_hash=hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+        )
 
     async def _store_session(self, session: Session) -> None:
         """Write-through to cache (§3.1 keys) and db (§4 session methods)."""
@@ -292,6 +306,13 @@ class SessionManager:
                 ttl_seconds=ttl,
             )
         await self.db.save_session(data)
+        if self.cache is not None and session.refresh_token:
+            ttl = max(1, int((session.expires_at - _utcnow()).total_seconds()))
+            await self.cache.set(
+                self._refresh_map_key(session.refresh_token),
+                session.id,
+                ttl_seconds=ttl,
+            )
 
     async def _get_session(self, session_id: str) -> Optional[Session]:
         """Cache-first lookup with db fallback (and re-cache)."""
@@ -327,6 +348,9 @@ class SessionManager:
         if self.cache is None:
             return
         await self.cache.delete(SESSION_KEY_TEMPLATE.format(session_id=session_id))
+        record = await self.db.get_session(session_id)
+        if record and record.get("refresh_token"):
+            await self.cache.delete(self._refresh_map_key(str(record["refresh_token"])))
         index_key = USER_SESSIONS_KEY_TEMPLATE.format(user_id=user_id)
         remaining = [
             sid
@@ -356,6 +380,21 @@ class SessionManager:
                 user_id,
                 max_sessions,
             )
+
+    async def _resolve_session_for_refresh(
+        self, refresh_token: str, user_id: str
+    ) -> Optional[Session]:
+        """Find the session owning a refresh token (cache ledger first)."""
+        if self.cache is not None:
+            session_id = await self.cache.get(self._refresh_map_key(refresh_token))
+            if session_id:
+                return await self._get_session(str(session_id))
+            return None
+        # No cache: fall back to matching the stored token on active sessions.
+        for record in await self.db.get_active_sessions(user_id):
+            if record.get("refresh_token") == refresh_token:
+                return Session.from_dict(record)
+        return None
 
     def _schedule_last_active_update(self, session_id: str) -> None:
         """Fire the last-active update, retaining the task reference (§0)."""

@@ -508,7 +508,10 @@ def _resolve_legacy(user: Dict[str, Any]) -> Optional[Dict[str, Any]]:
     legacy = user.get("legacy_password_hash")
     if isinstance(legacy, dict) and legacy.get("hash"):
         return legacy
-    algorithm = user.get("password_algorithm")
+    algorithm = str(user.get("password_algorithm") or "").lower()
+    # Standard algorithms are handled by the normal verify path, not legacy.
+    if algorithm in ("", "bcrypt", "argon2"):
+        return None
     hash_str = user.get("password_hash") or user.get("hashed_password")
     if algorithm and hash_str:
         return {

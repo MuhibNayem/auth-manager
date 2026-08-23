@@ -44,20 +44,27 @@ __all__ = [
 # Provider availability flags (§0.9 lazy/guarded imports). Each block is
 # independent so ANY combination of missing SDKs imports cleanly — including
 # twilio absent while boto3 is present (the historical NameError path).
+# The flags reflect the underlying SDK availability reported by the provider
+# modules themselves (they import cleanly even without their SDK and raise
+# informative ImportErrors at construction time).
 TWILIO_AVAILABLE = False
 try:
+    from .twilio_provider import TWILIO_AVAILABLE as _TWILIO_SDK
     from .twilio_provider import TwilioConfig, TwilioProvider
 except ImportError:
     pass
 else:
-    TWILIO_AVAILABLE = True
-    __all__ += ["TwilioProvider", "TwilioConfig"]
+    TWILIO_AVAILABLE = bool(_TWILIO_SDK)
+    if TWILIO_AVAILABLE:
+        __all__ += ["TwilioProvider", "TwilioConfig"]
 
 AWS_SNS_AVAILABLE = False
 try:
     from .aws_sns_provider import AWSSNSConfig, AWSSNSProvider
+    from .aws_sns_provider import BOTO3_AVAILABLE as _BOTO3_SDK
 except ImportError:
     pass
 else:
-    AWS_SNS_AVAILABLE = True
-    __all__ += ["AWSSNSProvider", "AWSSNSConfig"]
+    AWS_SNS_AVAILABLE = bool(_BOTO3_SDK)
+    if AWS_SNS_AVAILABLE:
+        __all__ += ["AWSSNSProvider", "AWSSNSConfig"]
