@@ -1,22 +1,40 @@
 """
-Authy UI Kit - React Components
+Authy UI Kit - React scaffold templates.
 
-Pre-built, accessible authentication components for React/TypeScript
+These are SOURCE-TEMPLATE STRINGS for the `authy` CLI scaffolding and for
+copy/paste use; they are not importable React components. The real React
+artifact in this package is the admin dashboard app under
+`react/admin-dashboard/`.
+
+Conventions kept in sync with the admin dashboard:
+- the access token is persisted under localStorage key `authy_admin_token`;
+- the API location is configurable via `apiBaseUrl` + `loginPath` props
+  (same convention as the Svelte/Vue LoginForms in this package).
 """
 
-# These are template files that would be installed via npm
-# Located here for reference and CLI scaffolding
+ADMIN_TOKEN_KEY = "authy_admin_token"
 
 REACT_COMPONENTS = {
     'LoginForm.tsx': '''
 import React, { useState } from 'react';
 
+const ADMIN_TOKEN_KEY = 'authy_admin_token';
+
 interface LoginFormProps {
-  onSuccess?: (user: any) => void;
+  /** Auth backend origin; empty string means the current origin. */
+  apiBaseUrl?: string;
+  /** Login route served by the backend. */
+  loginPath?: string;
+  onSuccess?: (user: unknown, token: string) => void;
   onError?: (error: Error) => void;
 }
 
-export function LoginForm({ onSuccess, onError }: LoginFormProps) {
+export function LoginForm({
+  apiBaseUrl = '',
+  loginPath = '/api/auth/login',
+  onSuccess,
+  onError,
+}: LoginFormProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -24,19 +42,19 @@ export function LoginForm({ onSuccess, onError }: LoginFormProps) {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setLoading(true);
-    
+
     try {
-      const response = await fetch('/auth/login', {
+      const response = await fetch(`${apiBaseUrl}${loginPath}`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
       });
-      
+
       if (!response.ok) throw new Error('Login failed');
-      
+
       const data = await response.json();
-      localStorage.setItem('access_token', data.access_token);
-      onSuccess?.(data.user);
+      window.localStorage.setItem(ADMIN_TOKEN_KEY, data.access_token);
+      onSuccess?.(data.user, data.access_token);
     } catch (error) {
       onError?.(error as Error);
     } finally {
@@ -72,18 +90,24 @@ export function LoginForm({ onSuccess, onError }: LoginFormProps) {
 import React, { useState } from 'react';
 
 interface MagicLinkButtonProps {
+  /** Auth backend origin; empty string means the current origin. */
+  apiBaseUrl?: string;
   email?: string;
   text?: string;
 }
 
-export function MagicLinkButton({ email, text = 'Send Magic Link' }: MagicLinkButtonProps) {
+export function MagicLinkButton({
+  apiBaseUrl = '',
+  email,
+  text = 'Send Magic Link',
+}: MagicLinkButtonProps) {
   const [sent, setSent] = useState(false);
 
   const handleSend = async () => {
-    const userEmail = email || prompt('Enter your email:');
+    const userEmail = email || window.prompt('Enter your email:');
     if (!userEmail) return;
 
-    const response = await fetch('/auth/magic-link', {
+    const response = await fetch(`${apiBaseUrl}/api/auth/magic-link`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email: userEmail })
@@ -95,8 +119,8 @@ export function MagicLinkButton({ email, text = 'Send Magic Link' }: MagicLinkBu
   };
 
   return (
-    <button onClick={handleSend} disabled={sent}>
-      {sent ? '✓ Check your email' : text}
+    <button type="button" onClick={handleSend} disabled={sent}>
+      {sent ? 'Check your email' : text}
     </button>
   );
 }
@@ -106,21 +130,25 @@ export function MagicLinkButton({ email, text = 'Send Magic Link' }: MagicLinkBu
 import React from 'react';
 
 interface SocialLoginProps {
+  /** Auth backend origin; empty string means the current origin. */
+  apiBaseUrl?: string;
   providers?: ('google' | 'github' | 'apple' | 'microsoft')[];
-  onSuccess?: (user: any) => void;
 }
 
-export function SocialLogin({ providers = ['google'], onSuccess }: SocialLoginProps) {
-  const handleSocialLogin = async (provider: string) => {
-    // Redirect to provider auth endpoint
-    window.location.href = `/auth/social/${provider}`;
+export function SocialLogin({
+  apiBaseUrl = '',
+  providers = ['google'],
+}: SocialLoginProps) {
+  const handleSocialLogin = (provider: string) => {
+    // Redirect to the backend's social auth entry point.
+    window.location.href = `${apiBaseUrl}/api/auth/social/${provider}`;
   };
 
   const providerIcons: Record<string, string> = {
-    google: '🔵',
-    github: '⚫',
-    apple: '🍎',
-    microsoft: '🪟'
+    google: 'G',
+    github: 'GH',
+    apple: 'A',
+    microsoft: 'M'
   };
 
   return (
@@ -128,6 +156,7 @@ export function SocialLogin({ providers = ['google'], onSuccess }: SocialLoginPr
       {providers.map(provider => (
         <button
           key={provider}
+          type="button"
           onClick={() => handleSocialLogin(provider)}
           className={`social-btn ${provider}`}
         >
@@ -140,4 +169,4 @@ export function SocialLogin({ providers = ['google'], onSuccess }: SocialLoginPr
 '''
 }
 
-__all__ = ['REACT_COMPONENTS']
+__all__ = ['ADMIN_TOKEN_KEY', 'REACT_COMPONENTS']

@@ -1,174 +1,172 @@
+"""AWS Cognito flows: register, login, refresh, social, MFA, attributes.
+
+Requires an AWS Cognito user pool and the `authy-package[dynamodb]` or
+`authy-package[sms]` extra for boto3 (any extra that provides boto3, or
+`pip install boto3`). AWS credentials come from the standard provider
+chain — prefer IAM roles/SSO; never hardcode keys
+(see AWS_SECURITY_GUIDE.md).
+
+Environment variables:
+
+    AWS_REGION              e.g. us-east-1
+    COGNITO_USER_POOL_ID    e.g. us-east-1_xxxxxxxxx
+    COGNITO_APP_CLIENT_ID   app client id
+    COGNITO_REDIRECT_URI    e.g. https://app.example.com/callback
+    AUTHY_COGNITO_USERNAME  demo username (default: johndoe)
+    AUTHY_COGNITO_EMAIL     demo email   (default: john@example.com)
+
+Interactive values (confirmation codes, MFA codes) are read from env
+vars so the script contains no fake placeholder flow:
+
+    AUTHY_COGNITO_CONFIRMATION_CODE / AUTHY_COGNITO_MFA_CODE
+
+Token payloads use lowercase keys consistently:
+    {"access_token": ..., "refresh_token": ..., "id_token": ...}
+"""
+
 import asyncio
-from authy_package.core.auth_manager import CognitoAuthManager
+import os
+
 from authy_package.cognito.cognito_manager import CognitoManager
+from authy_package.core.auth_manager import CognitoAuthManager
 
-# Configuration for Cognito
-USER_POOL_ID = "your_user_pool_id"
-APP_CLIENT_ID = "your_app_client_id"
-REGION_NAME = "your_region"
+REGION = os.environ["AWS_REGION"]
+USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
+APP_CLIENT_ID = os.environ["COGNITO_APP_CLIENT_ID"]
+REDIRECT_URI = os.environ.get("COGNITO_REDIRECT_URI", "https://app.example.com/callback")
 
-# Initialize Cognito Manager
-cognito_manager = CognitoManager(region_name=REGION_NAME, user_pool_id=USER_POOL_ID, app_client_id=APP_CLIENT_ID)
+USERNAME = os.environ.get("AUTHY_COGNITO_USERNAME", "johndoe")
+EMAIL = os.environ.get("AUTHY_COGNITO_EMAIL", "john@example.com")
 
-async def main():
-    # Initialize AuthManager with CognitoManager
+
+async def main() -> None:
+    cognito_manager = CognitoManager(
+        region_name=REGION,
+        user_pool_id=USER_POOL_ID,
+        app_client_id=APP_CLIENT_ID,
+    )
     auth_manager = CognitoAuthManager(cognito_manager=cognito_manager)
 
-    # Register a user with Cognito
-    await handle_registration(auth_manager)
+    # A strong per-run password for the demo account (never hardcode one).
+    import secrets
 
-    # Log in the user with Cognito
-    login_response = await handle_login(auth_manager)
+    password = secrets.token_urlsafe(16)
 
-    # Refresh the access token using a refresh token
-    await handle_token_refresh(auth_manager, login_response)
-
-    # Logout the user from Cognito
-    await handle_logout(auth_manager, login_response)
-
-    # Initiate Social Login with Cognito
-    await handle_social_login(auth_manager)
-
-    # Exchange authorization code for tokens (Social login with Cognito)
-    await handle_code_exchange(auth_manager)
-
-    # Reset password
-    await handle_password_reset(auth_manager)
-
-    # Confirm new password
-    await handle_password_confirmation(auth_manager)
-
-    # Confirm user account
-    await handle_account_confirmation(auth_manager)
-
-    # Update user attributes
-    await handle_attribute_update(auth_manager, login_response)
-
-    # Enable TOTP MFA
-    await handle_enable_totp_mfa(auth_manager)
-
-    # Enable SMS MFA
-    await handle_enable_sms_mfa(auth_manager)
-
-    # Disable MFA
-    await handle_disable_mfa(auth_manager)
-
-    # Verify MFA
-    await handle_mfa_verification(auth_manager, login_response)
-    
-    # linking authenticator app
-    
-    await associate_software_token(auth_manager, login_response)
-
-async def handle_registration(auth_manager):
+    # 1. Register.
     try:
-        response = await auth_manager.register_user(username="johndoe", email="john@example.com", password="securepassword")
-        print("Cognito Registration Response:", response)
-    except Exception as e:
-        print("Cognito Registration Error:", str(e))
+        response = await auth_manager.register_user(
+            username=USERNAME, password=password, email=EMAIL
+        )
+        print("Cognito registration:", response)
+    except Exception as exc:  # Cognito raises botocore ClientError variants
+        print("Cognito registration error:", exc)
 
-async def handle_login(auth_manager):
-    try:
-        return await auth_manager.login_user(username="johndoe", password="securepassword")
-    except Exception as e:
-        print("Cognito Login Error:", str(e))
+    # 2. Confirm the account if a code was provided (from the email/SMS).
+    confirmation_code = os.environ.get("AUTHY_COGNITO_CONFIRMATION_CODE")
+    if confirmation_code:
+        try:
+            await auth_manager.confirm_user_account(
+                username=USERNAME, confirmation_code=confirmation_code
+            )
+            print("Account confirmed")
+        except Exception as exc:
+            print("Account confirmation error:", exc)
+    else:
+        print("[skip] account confirmation (set AUTHY_COGNITO_CONFIRMATION_CODE)")
 
-async def handle_token_refresh(auth_manager, login_response):
+    # 3. Login -> {"access_token", "refresh_token", ...}.
+    login_response = None
     try:
-        refreshed_tokens = await auth_manager.refresh_token(refresh_token=login_response["refresh_token"])
-        print("Refreshed Tokens:", refreshed_tokens)
-    except Exception as e:
-        print("Refresh Token Error:", str(e))
+        login_response = await auth_manager.login_user(
+            username=USERNAME, password=password
+        )
+        print("Cognito login: received", sorted(login_response.keys()))
+    except Exception as exc:
+        print("Cognito login error:", exc)
 
-async def handle_logout(auth_manager, login_response):
-    try:
-        await auth_manager.logout_user(access_token=login_response["access_token"])
-        print("Cognito User logged out successfully.")
-    except Exception as e:
-        print("Cognito Logout Error:", str(e))
+    if not login_response:
+        print("No session established; remaining steps skipped.")
+        return
 
-async def handle_social_login(auth_manager):
-    try:
-        social_login_url = await auth_manager.initiate_social_login(provider="google", redirect_uri="https://your-app.com/callback")
-        print("Social Login URL:", social_login_url)
-    except Exception as e:
-        print("Social Login Error:", str(e))
+    access_token = login_response["access_token"]
 
-async def handle_code_exchange(auth_manager):
+    # 4. Refresh tokens.
     try:
-        tokens = await auth_manager.exchange_code_for_tokens(code="auth_code_from_provider", redirect_uri="https://your-app.com/callback")
-        print("Tokens received after exchanging code:", tokens)
-    except Exception as e:
-        print("Exchange Code for Tokens Error:", str(e))
+        refreshed = await auth_manager.refresh_token(
+            refresh_token=login_response["refresh_token"]
+        )
+        access_token = refreshed.get("access_token", access_token)
+        print("Tokens refreshed:", sorted(refreshed.keys()))
+    except Exception as exc:
+        print("Refresh error:", exc)
 
-async def handle_password_reset(auth_manager):
+    # 5. Social login via the hosted UI.
     try:
-        await auth_manager.reset_password(username="johndoe")
-        print("Password reset initiated for johndoe.")
-    except Exception as e:
-        print("Password Reset Error:", str(e))
+        social_url = await auth_manager.initiate_social_login(
+            provider="google", redirect_uri=REDIRECT_URI
+        )
+        print("Social login URL:", social_url)
+        # After the browser callback, exchange the code:
+        code = os.environ.get("AUTHY_COGNITO_SOCIAL_CODE")
+        if code:
+            tokens = await auth_manager.exchange_code_for_tokens(
+                code=code, redirect_uri=REDIRECT_URI
+            )
+            print("Social tokens:", sorted(tokens.keys()))
+    except Exception as exc:
+        print("Social login error:", exc)
 
-async def handle_password_confirmation(auth_manager):
+    # 6. User info + attribute update (lowercase access_token key).
     try:
-        confirmation_code = "your_confirmation_code"  # Replace with the actual code
-        new_password = "new_secure_password"
-        confirm_response = await auth_manager.confirm_password(username="johndoe", confirmation_code=confirmation_code, new_password=new_password)
-        print("Password Confirmation Response:", confirm_response)
-    except Exception as e:
-        print("Password Confirmation Error:", str(e))
+        user_info = await auth_manager.get_user_info(access_token=access_token)
+        print("User info retrieved:", sorted(user_info.keys()) if isinstance(user_info, dict) else user_info)
+        await auth_manager.update_user_attributes(
+            access_token=access_token,
+            attributes=[{"Name": "custom:department", "Value": "Engineering"}],
+        )
+        print("User attributes updated")
+    except Exception as exc:
+        print("Attribute update error:", exc)
 
-async def handle_account_confirmation(auth_manager):
+    # 7. MFA: TOTP setup, optional verification with a real code.
     try:
-        confirmation_code = "your_confirmation_code"  # Replace with the actual code
-        confirm_account_response = await auth_manager.confirm_user_account(username="johndoe", confirmation_code=confirmation_code)
-        print("Account Confirmation Response:", confirm_account_response)
-    except Exception as e:
-        print("Account Confirmation Error:", str(e))
+        totp_setup = await auth_manager.associate_software_token(access_token=access_token)
+        print("TOTP association:", sorted(totp_setup.keys()) if isinstance(totp_setup, dict) else totp_setup)
+        await auth_manager.enable_TOTP_mfa(username=USERNAME)
+        print("TOTP MFA enabled")
+        mfa_code = os.environ.get("AUTHY_COGNITO_MFA_CODE")
+        if mfa_code:
+            verify = await auth_manager.verify_mfa(access_token=access_token, code=mfa_code)
+            print("MFA verified:", verify)
+        else:
+            print("[skip] MFA verification (set AUTHY_COGNITO_MFA_CODE)")
+    except Exception as exc:
+        print("MFA error:", exc)
 
-async def handle_attribute_update(auth_manager, login_response):
+    # 8. Password reset flow (code comes from the email/SMS Cognito sends).
     try:
-        attributes = [{"Name": "email", "Value": "john.doe@example.com"}]
-        update_response = await auth_manager.update_user_attributes(access_token=login_response["AccessToken"], attributes=attributes)
-        print("User Attributes Update Response:", update_response)
-    except Exception as e:
-        print("Update User Attributes Error:", str(e))
-        
-async def associate_software_token(auth_manager, login_response):
-    try:
-        return await auth_manager.associate_software_token(access_token = login_response["access_token"])
-    except Exception as e:
-        print("Cognito Login Error:", str(e))
+        await auth_manager.reset_password(username=USERNAME)
+        print("Password reset initiated")
+        reset_code = os.environ.get("AUTHY_COGNITO_RESET_CODE")
+        if reset_code:
+            await auth_manager.confirm_password(
+                username=USERNAME,
+                confirmation_code=reset_code,
+                new_password=secrets.token_urlsafe(16),
+            )
+            print("Password reset completed")
+    except Exception as exc:
+        print("Password reset error:", exc)
 
-async def handle_enable_totp_mfa(auth_manager):
+    # 9. Logout (hosted-UI logout URL; requires redirect_uri).
     try:
-        await auth_manager.enable_TOTP_mfa(username="johndoe")
-        print("TOTP MFA enabled for johndoe.")
-    except Exception as e:
-        print("Enable TOTP MFA Error:", str(e))
+        logout_url = await auth_manager.logout_user(
+            redirect_uri=REDIRECT_URI, access_token=access_token
+        )
+        print("Logout URL:", logout_url)
+    except Exception as exc:
+        print("Logout error:", exc)
 
-async def handle_enable_sms_mfa(auth_manager):
-    try:
-        await auth_manager.enable_sms_mfa(username="johndoe")
-        print("SMS MFA enabled for johndoe.")
-    except Exception as e:
-        print("Enable SMS MFA Error:", str(e))
 
-async def handle_disable_mfa(auth_manager):
-    try:
-        await auth_manager.disable_mfa(username="johndoe")
-        print("MFA disabled for johndoe.")
-    except Exception as e:
-        print("Disable MFA Error:", str(e))
-
-async def handle_mfa_verification(auth_manager, login_response):
-    try:
-        access_token = login_response["AccessToken"]
-        mfa_code = "your_mfa_code"  # Replace with the actual MFA code
-        verify_response = await auth_manager.verify_mfa(access_token=access_token, code=mfa_code)
-        print("MFA Verification Response:", verify_response)
-    except Exception as e:
-        print("MFA Verification Error:", str(e))
-
-# Run the async main function
 if __name__ == "__main__":
     asyncio.run(main())

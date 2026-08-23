@@ -1,121 +1,191 @@
+"""Social OAuth login flows (Google, GitHub, Facebook, Apple).
+
+Requires MongoDB + Redis and provider credentials, all from the
+environment (nothing hardcoded):
+
+    pip install "authy-package[mongodb]"
+
+    AUTHY_JWT_SECRET / AUTHY_DB_URL / AUTHY_DB_NAME / AUTHY_REDIS_URL
+
+    GOOGLE_CLIENT_SECRETS_FILE   OAuth client-secrets JSON path
+    GOOGLE_REDIRECT_URI          e.g. https://app.example.com/auth/google/callback
+    GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET / GITHUB_REDIRECT_URI
+    FACEBOOK_APP_ID / FACEBOOK_APP_SECRET / FACEBOOK_REDIRECT_URI
+    APPLE_CLIENT_ID / APPLE_TEAM_ID / APPLE_KEY_ID / APPLE_PRIVATE_KEY_PATH
+
+Authorization codes arrive from your frontend callback; pass the one you
+want to exercise via the matching env var:
+
+    AUTHY_GOOGLE_CODE / AUTHY_GITHUB_CODE / AUTHY_FACEBOOK_CODE / AUTHY_APPLE_CODE
+
+Every block that lacks configuration is skipped with a clear message —
+there is no pseudocode in this example.
+"""
+
 import asyncio
-from authy_package.core.auth_manager import SocialAuthManager
-from authy_package.cache.redis_cache import RedisCaching
-from authy_package.db.mongodb import MongoDB
-from authy_package.social.facebook import FacebookManager
-from authy_package.social.github import GitHubManager
-from authy_package.social.apple import AppleManager
-from authy_package.social.google import GoogleManager
 import os
+import secrets
 
-# Configuration
-REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
-MONGO_URL = os.getenv("MONGO_URL", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "your_db_name")
-COLLECTION_NAME = "users"
+os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
+os.environ.setdefault("AUTHY_ENV", "development")
+os.environ.setdefault("AUTHY_DB_TYPE", "mongodb")
 
-# Social OAuth Manager Configurations
-FACEBOOK_APP_ID = os.getenv("FACEBOOK_APP_ID", "your_facebook_app_id")
-FACEBOOK_APP_SECRET = os.getenv("FACEBOOK_APP_SECRET", "your_facebook_app_secret")
-GITHUB_CLIENT_ID = os.getenv("GITHUB_CLIENT_ID", "your_github_client_id")
-GITHUB_CLIENT_SECRET = os.getenv("GITHUB_CLIENT_SECRET", "your_github_client_secret")
-APPLE_TEAM_ID = os.getenv("APPLE_TEAM_ID", "your_apple_team_id")
-APPLE_CLIENT_ID = os.getenv("APPLE_CLIENT_ID", "your_apple_client_id")
-APPLE_KEY_ID = os.getenv("APPLE_KEY_ID", "your_apple_key_id")
-APPLE_PRIVATE_KEY_PATH = os.getenv("APPLE_PRIVATE_KEY_PATH", "path_to_your_apple_private_key.p8")
-GOOGLE_CLIENT_ID = os.getenv("GOOGLE_CLIENT_ID", "your_google_client_id")
-GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET", "your_google_client_secret")
-
-# Initialize MongoDB, Redis, and Social Managers
-mongo_db = MongoDB(MONGO_URL, DB_NAME, COLLECTION_NAME)
-redis_cache = RedisCaching(REDIS_URL)
-facebook_manager = FacebookManager(FACEBOOK_APP_ID, FACEBOOK_APP_SECRET)
-github_manager = GitHubManager(GITHUB_CLIENT_ID, GITHUB_CLIENT_SECRET)
-apple_manager = AppleManager(APPLE_TEAM_ID, APPLE_CLIENT_ID, APPLE_KEY_ID, APPLE_PRIVATE_KEY_PATH)
-google_manager = GoogleManager(GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET)
-
-# Initialize AuthManager for MongoDB, Redis, and social login providers
-auth_manager = SocialAuthManager(
-    db=mongo_db,
-    cache=redis_cache,
-    facebook_manager=facebook_manager,
-    github_manager=github_manager,
-    apple_manager=apple_manager,
-    google_manager=google_manager
+from authy_package.cache.redis_cache import RedisCache    # noqa: E402
+from authy_package.config import AuthConfig               # noqa: E402
+from authy_package.core.auth_manager import (             # noqa: E402
+    SocialAuthManager,
 )
+from authy_package.db.mongodb import MongoDB              # noqa: E402
+from authy_package.errors import AuthyError               # noqa: E402
+from authy_package.mfa.mfa_setup import MFAAuthManager    # noqa: E402
+from authy_package.social.apple import AppleManager       # noqa: E402
+from authy_package.social.facebook import FacebookManager  # noqa: E402
+from authy_package.social.github import GitHubManager     # noqa: E402
+from authy_package.social.google import GoogleManager     # noqa: E402
 
-async def social_login_facebook():
-    try:
-        facebook_code = "facebook_oauth_code_from_frontend"
-        response = await auth_manager.facebook_social_login(facebook_code)
-        print("Facebook Login Response:", response)
-    except Exception as e:
-        print("Facebook Login Error:", str(e))
 
-async def social_login_github():
-    try:
-        github_code = "github_oauth_code_from_frontend"
-        response = await auth_manager.github_social_login(github_code)
-        print("GitHub Login Response:", response)
-    except Exception as e:
-        print("GitHub Login Error:", str(e))
+def build_providers() -> dict:
+    """Instantiate only the providers whose credentials are configured."""
+    providers: dict = {}
 
-async def social_login_apple():
-    try:
-        apple_code = "apple_oauth_code_from_frontend"
-        response = await auth_manager.apple_social_login(apple_code)
-        print("Apple Login Response:", response)
-    except Exception as e:
-        print("Apple Login Error:", str(e))
+    secrets_file = os.environ.get("GOOGLE_CLIENT_SECRETS_FILE")
+    google_redirect = os.environ.get("GOOGLE_REDIRECT_URI")
+    if secrets_file and google_redirect:
+        providers["google"] = GoogleManager(
+            secrets_file, google_redirect, ["openid", "email", "profile"]
+        )
 
-async def social_login_google():
-    try:
-        google_code = "google_oauth_code_from_frontend"
-        response = await auth_manager.google_social_login(google_code)
-        print("Google Login Response:", response)
-    except Exception as e:
-        print("Google Login Error:", str(e))
+    if os.environ.get("GITHUB_CLIENT_ID") and os.environ.get("GITHUB_CLIENT_SECRET"):
+        providers["github"] = GitHubManager(
+            os.environ["GITHUB_CLIENT_ID"],
+            os.environ["GITHUB_CLIENT_SECRET"],
+            os.environ.get("GITHUB_REDIRECT_URI", ""),
+        )
 
-async def refresh_access_token(user_identifier):
-    try:
-        new_token = await auth_manager.refresh_access_token(user_identifier)
-        print("New Access Token:", new_token)
-    except Exception as e:
-        print("Refresh Access Token Error:", str(e))
+    if os.environ.get("FACEBOOK_APP_ID") and os.environ.get("FACEBOOK_APP_SECRET"):
+        providers["facebook"] = FacebookManager(
+            os.environ["FACEBOOK_APP_ID"],
+            os.environ["FACEBOOK_APP_SECRET"],
+            os.environ.get("FACEBOOK_REDIRECT_URI", ""),
+        )
 
-async def logout_user(user_identifier):
+    apple_key_path = os.environ.get("APPLE_PRIVATE_KEY_PATH")
+    if (
+        os.environ.get("APPLE_CLIENT_ID")
+        and os.environ.get("APPLE_TEAM_ID")
+        and os.environ.get("APPLE_KEY_ID")
+        and apple_key_path
+    ):
+        with open(apple_key_path, encoding="utf-8") as fh:
+            private_key = fh.read()
+        providers["apple"] = AppleManager(
+            os.environ["APPLE_CLIENT_ID"],
+            os.environ["APPLE_TEAM_ID"],
+            os.environ["APPLE_KEY_ID"],
+            private_key,
+        )
+
+    return providers
+
+
+async def run_login(auth_manager: SocialAuthManager, provider: str, code: str) -> dict | None:
+    """Exchange one provider's authorization code; return the login response."""
     try:
+        if provider == "google":
+            response = await auth_manager.google_social_login(code)
+        elif provider == "github":
+            response = await auth_manager.github_social_login(code)
+        elif provider == "facebook":
+            response = await auth_manager.facebook_social_login(code)
+        elif provider == "apple":
+            redirect_uri = os.environ.get("APPLE_REDIRECT_URI", "")
+            response = await auth_manager.apple_social_login(redirect_uri, code=code)
+        else:
+            return None
+        print(f"{provider} login: user={response['user'].get('email')}")
+        return response
+    except AuthyError as exc:
+        print(f"{provider} login error: {exc}")
+        return None
+
+
+async def main() -> None:
+    config = AuthConfig.from_env()
+    config.validate()
+
+    db = MongoDB(
+        os.environ["AUTHY_DB_URL"],
+        os.environ.get("AUTHY_DB_NAME", "authy_db"),
+        os.environ.get("AUTHY_DB_COLLECTION", "users"),
+    )
+    cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
+    await db.connect()
+
+    try:
+        providers = build_providers()
+        auth_manager = SocialAuthManager(
+            db=db,
+            cache=cache,
+            google_manager=providers.get("google"),
+            github_manager=providers.get("github"),
+            facebook_manager=providers.get("facebook"),
+            apple_manager=providers.get("apple"),
+            mfa_manager=MFAAuthManager(db=db),
+        )
+
+        if not providers:
+            print("No social providers configured; set their env vars (see docstring).")
+            return
+
+        # Exchange whichever authorization codes were provided.
+        login_response: dict | None = None
+        for provider in ("google", "github", "facebook", "apple"):
+            if provider not in providers:
+                print(f"[skip] {provider}: credentials not configured")
+                continue
+            code = os.environ.get(f"AUTHY_{provider.upper()}_CODE")
+            if not code:
+                print(f"[skip] {provider}: no AUTHY_{provider.upper()}_CODE to exchange")
+                continue
+            login_response = await run_login(auth_manager, provider, code) or login_response
+
+        if login_response is None:
+            print("No login performed; nothing to refresh or log out.")
+            return
+
+        # Use a REAL identifier from the authenticated user (the previous
+        # version of this example contained `'email' or 'username' or 'phone'`
+        # pseudocode, which always evaluated to 'email').
+        user = login_response["user"]
+        user_identifier = user.get("email") or user.get("username")
+
+        # Refresh the provider access token when the login returned one.
+        token_info = login_response.get("access_token") or {}
+        provider_refresh = token_info.get("refresh_token")
+        if provider_refresh:
+            try:
+                refreshed = await auth_manager.refresh_access_token(
+                    provider="google", refresh_token=provider_refresh, user=user
+                )
+                print("Provider token refreshed:", sorted(refreshed.keys()))
+            except AuthyError as exc:
+                print("Provider token refresh error:", exc)
+
+        # Enable + reconfigure MFA for the social user.
+        try:
+            await auth_manager.enable_mfa(email=user_identifier)
+            await auth_manager.reconfigure_mfa(email=user_identifier)
+            print("MFA enabled and reconfigured for", user_identifier)
+        except AuthyError as exc:
+            print("MFA error:", exc)
+
+        # Logout.
         await auth_manager.logout(provider="google", user_identifier=user_identifier)
-        print("User logged out successfully.")
-    except Exception as e:
-        print("Logout Error:", str(e))
+        print("User logged out:", user_identifier)
+    finally:
+        await cache.close()
+        await db.close()
 
-async def enable_mfa(user_identifier):
-    try:
-        mfa_response = await auth_manager.enable_mfa(user_identifier)
-        print("MFA Enabled Response:", mfa_response)
-    except Exception as e:
-        print("Enable MFA Error:", str(e))
 
-async def reconfigure_mfa(user_identifier):
-    try:
-        mfa_reconfigure_response = await auth_manager.reconfigure_mfa(user_identifier)
-        print("MFA Reconfigured Response:", mfa_reconfigure_response)
-    except Exception as e:
-        print("Reconfigure MFA Error:", str(e))
-
-async def main():
-    await social_login_facebook()
-    await social_login_github()
-    await social_login_apple()
-    await social_login_google()
-
-    user_identifier = 'email' or 'username' or 'phone'
-    await refresh_access_token(user_identifier)
-    await logout_user(user_identifier)
-    await enable_mfa(user_identifier)
-    await reconfigure_mfa(user_identifier)
-
-# Run the async main function
 if __name__ == "__main__":
     asyncio.run(main())

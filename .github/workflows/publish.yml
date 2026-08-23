@@ -1,104 +1,149 @@
-name: Publish to PyPI and Create Release on Github
+# Publish to PyPI and create a GitHub Release (docs/CONTRACTS.md §11).
+#
+# Fixes over the previous workflow:
+# 1. Publishes ONLY on semver tag push (v*) — never on every push to main.
+# 2. The full test matrix runs in THIS workflow and gates the publish job.
+# 3. Bot guard removed: there is no version-bump bot anymore. Publishing is
+#    triggered exclusively by a human/automation pushing a semver tag, plus
+#    the protected `pypi` GitHub environment and OIDC trusted publishing.
+#    (The old guard checked for the Actions bot author name while bump
+#    commits were authored as "GitHub Action", so it never matched.)
+# 4. Tag-collision bug fixed: the tag is created exactly once, by whoever
+#    pushed it (git tag vX.Y.Z && git push origin vX.Y.Z). This workflow
+#    never runs `git tag`, so softprops/action-gh-release cannot collide
+#    with a second tag-creation step.
+# 5. Tag/version guard: the tag must equal the version in pyproject.toml.
+# 6. Actions pinned to current major versions (v4/v5; no deprecated v2).
+#
+# Release procedure (documented in RUNBOOK.md):
+#   1. Bump version in pyproject.toml AND authy_package/__init__.py
+#      (kept in sync by the CI version-sync job), merge to main.
+#   2. git tag v<version> && git push origin v<version>
+#
+# PyPI publishing uses OIDC trusted publishing (no long-lived API token):
+# the `pypi` environment must be configured as a trusted publisher for
+# the `authy-package` project on PyPI.
+
+name: Publish release
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+*"
 
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  pypi-publish:
+  test:
+    name: pytest (py${{ matrix.python-version }})
     runs-on: ubuntu-latest
-    environment:
-      name: pypi
-      url: https://pypi.org/project/authy_package/
-    permissions:
-      contents: write
-      packages: write
-      id-token: write
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
 
-      - name: Stop workflow if pushed by GitHub Actions bot
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with all extras + dev tools
         run: |
-          if [[ "$(git log -1 --pretty=format:'%an')" == "github-actions[bot]" ]]; then
-            echo "Commit was pushed by GitHub Actions bot. Stopping workflow."
-            exit 0
-          fi
+          python -m pip install --upgrade pip
+          pip install ".[all,dev]"
+
+      - name: Run test suite
+        run: python -m pytest tests/
+
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Install Poetry
+      - name: Verify tag matches package version
         run: |
-          curl -sSL https://install.python-poetry.org | python3 - -y
+          python - <<'PY'
+          import os
+          import tomllib
+          from pathlib import Path
 
-      - name: Add Poetry to PATH
-        run: echo "$HOME/.local/bin" >> $GITHUB_PATH
-
-      - name: Update Poetry configuration
-        run: poetry config virtualenvs.create false
-
-      - name: Install dependencies
-        run: |
-          poetry lock --no-update || poetry lock
-          poetry install --no-interaction
-
-      - name: Determine version bump
-        id: version_bump
-        run: |
-          # Check the commit messages for tags
-          if git log -1 --pretty=%B | grep -q '\[major\]'; then
-            version=$(poetry version major -s)
-          elif git log -1 --pretty=%B | grep -q '\[minor\]'; then
-            version=$(poetry version minor -s)
-          else
-            version=$(poetry version patch -s)
-          fi
-          echo "version=$version" >> $GITHUB_ENV
-
-      - name: Update pyproject.toml with new version
-        run: |
-          poetry version ${{ env.version }}
-
-      - name: Commit version bump
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          git remote set-url origin https://x-access-token:${{ secrets.GITHUB_TOKEN }}@github.com/${{ github.repository }}
-          git add pyproject.toml
-          git commit -m "Bump version to v${{ env.version }}"
-          git push origin main
+          meta = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          version = meta["tool"]["poetry"]["version"]
+          tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
+          assert tag == version, (
+              f"tag v{tag} does not match pyproject.toml version {version!r}; "
+              "bump pyproject.toml + authy_package/__init__.py first"
+          )
+          print(f"tag matches package version {version}")
+          PY
 
       - name: Build package
-        run: poetry build
+        run: |
+          python -m pip install --upgrade pip
+          pip install build
+          python -m build
+
+      - name: Upload dist artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI (OIDC trusted publishing)
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: pypi
+      url: https://pypi.org/project/authy-package/
+    permissions:
+      id-token: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
 
       - name: Publish package distributions to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
 
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v1
+  github-release:
+    name: Create GitHub Release
+    runs-on: ubuntu-latest
+    needs: publish-pypi
+    permissions:
+      contents: write
+    steps:
+      - name: Download dist artifacts
+        uses: actions/download-artifact@v4
         with:
-          tag_name: "v${{ env.version }}"
-          name: "Release v${{ env.version }}"
+          name: dist
+          path: dist/
+
+      # The release attaches to the tag that triggered this workflow.
+      # No `git tag` step exists anywhere: the tag is created exactly once.
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: Release ${{ github.ref_name }}
           draft: false
           prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Push new version tag
-        run: |
-          git config --global user.name "GitHub Action"
-          git config --global user.email "action@github.com"
-          git tag "v${{ env.version }}"
-          git push origin "v${{ env.version }}"
+          generate_release_notes: true
+          files: |
+            dist/*.tar.gz
+            dist/*.whl

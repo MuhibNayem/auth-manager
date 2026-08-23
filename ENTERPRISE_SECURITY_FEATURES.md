@@ -7,6 +7,10 @@ This guide covers the three major enterprise security features added to Authy Pa
 
 All features are designed to be **vendor-agnostic** and **easy to configure**.
 
+These subsystems were rebuilt during the 2.0 remediation against
+`docs/CONTRACTS.md` (§2 configuration, §3 cache key schema, §6 login
+hardening).
+
 ---
 
 ## 1. Phone/SMS Authentication
@@ -25,7 +29,7 @@ Enterprise-grade SMS verification with support for multiple providers (Twilio, A
 
 **Step 1: Install dependency**
 ```bash
-pip install twilio
+pip install "authy-package[sms]"   # twilio + boto3
 ```
 
 **Step 2: Configure environment variables**
@@ -73,17 +77,20 @@ except TooManyAttemptsError as e:
 
 **Step 1: Install dependency**
 ```bash
-pip install boto3
+pip install "authy-package[sms]"   # twilio + boto3
 ```
 
-**Step 2: Configure environment variables**
+**Step 2: Configure environment and credentials**
 ```bash
 export AWS_REGION=us-east-1
-export AWS_ACCESS_KEY_ID=AKIA...
-export AWS_SECRET_ACCESS_KEY=your_secret
 export AUTHY_SMS_ENABLED=true
 export AUTHY_SMS_PROVIDER=aws_sns
 ```
+
+Credentials must come from the standard AWS credential provider chain —
+an IAM role for the service (recommended), AWS SSO, or a shared
+credentials file. **Never export static access keys**; see
+[AWS_SECURITY_GUIDE.md](AWS_SECURITY_GUIDE.md).
 
 **Step 3: Initialize**
 ```python
@@ -722,10 +729,8 @@ TWILIO_AUTH_TOKEN=...
 TWILIO_FROM_NUMBER=+1234567890
 TWILIO_MESSAGING_SERVICE_SID=MG...
 
-# AWS SNS
+# AWS SNS (credentials via IAM role / credential chain — see AWS_SECURITY_GUIDE.md)
 AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=AKIA...
-AWS_SECRET_ACCESS_KEY=...
 AWS_SNS_SENDER_ID=MyApp
 
 # Code settings

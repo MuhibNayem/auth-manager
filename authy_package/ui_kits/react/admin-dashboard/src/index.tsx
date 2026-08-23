@@ -5,6 +5,9 @@ import { Toaster } from 'react-hot-toast';
 import { Sidebar, Header } from './components/Layout';
 import { DashboardOverview } from './components/Dashboard';
 import { RoleManager } from './components/RBACManager';
+import { LoginPage } from './components/Login';
+import { EnterprisePage } from './components/EnterpriseFeatures';
+import { isTokenValid } from './lib/auth';
 import { useAuthStore } from './store';
 
 const queryClient = new QueryClient({
@@ -16,7 +19,7 @@ const queryClient = new QueryClient({
   },
 });
 
-// Placeholder components for other pages
+// Placeholder components for pages that do not have dedicated views yet.
 const UsersPage = () => <div className="p-6"><h1 className="text-2xl font-bold">Users Management</h1></div>;
 const OrganizationsPage = () => <div className="p-6"><h1 className="text-2xl font-bold">Organizations</h1></div>;
 const SecurityPage = () => <div className="p-6"><h1 className="text-2xl font-bold">Security Center</h1></div>;
@@ -26,20 +29,26 @@ const WebhooksPage = () => <div className="p-6"><h1 className="text-2xl font-bol
 const HealthPage = () => <div className="p-6"><h1 className="text-2xl font-bold">System Health</h1></div>;
 const SettingsPage = () => <div className="p-6"><h1 className="text-2xl font-bold">Settings</h1></div>;
 const RBACPage = () => <div className="p-6"><RoleManager /></div>;
-const LoginPage = () => <div className="min-h-screen flex items-center justify-center bg-gray-50">
-  <div className="max-w-md w-full p-8 bg-white rounded-xl shadow-lg">
-    <h1 className="text-2xl font-bold text-center mb-6">Authy Admin Login</h1>
-    <p className="text-gray-600 text-center">Login functionality to be implemented</p>
-  </div>
-</div>;
 
 const ProtectedRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const { isAuthenticated } = useAuthStore();
-  
-  if (!isAuthenticated) {
+  const { isAuthenticated, token, expiresAt, checkExpiry } = useAuthStore();
+
+  // Drop the session automatically when the token reaches its expiry.
+  React.useEffect(() => {
+    if (!token || expiresAt === null) return;
+    const delayMs = Math.max(1000, (expiresAt - Math.floor(Date.now() / 1000)) * 1000);
+    const timer = window.setTimeout(() => {
+      checkExpiry();
+    }, delayMs);
+    return () => window.clearTimeout(timer);
+  }, [token, expiresAt, checkExpiry]);
+
+  // Real gate: a session is valid only when a token exists AND its `exp`
+  // claim (when present) has not passed.
+  if (!isAuthenticated || !token || !isTokenValid(token)) {
     return <Navigate to="/login" replace />;
   }
-  
+
   return (
     <div className="flex min-h-screen bg-gray-50">
       <Sidebar />
@@ -139,6 +148,14 @@ export function AdminDashboard() {
               </ProtectedRoute>
             }
           />
+          <Route
+            path="/enterprise"
+            element={
+              <ProtectedRoute>
+                <EnterprisePage />
+              </ProtectedRoute>
+            }
+          />
         </Routes>
         <Toaster position="top-right" />
       </BrowserRouter>
@@ -146,11 +163,22 @@ export function AdminDashboard() {
   );
 }
 
-export { 
-  Sidebar, 
-  Header, 
+export {
+  Sidebar,
+  Header,
   DashboardOverview,
-  useAuthStore 
+  LoginPage,
+  useAuthStore
 };
 
-export type { User, Organization, AuditEvent, Session, DashboardMetrics } from './types';
+export {
+  ApiKeyManager,
+  BrandingConfigurator,
+  AIAnomalyDashboard,
+  PredictiveAnalytics,
+  NaturalLanguageQuery,
+  AdvancedAuditSearch,
+  EnterprisePage,
+} from './components/EnterpriseFeatures';
+
+export type { User, Organization, AuditEvent, Session, DashboardMetrics, LoginResponse } from './types';

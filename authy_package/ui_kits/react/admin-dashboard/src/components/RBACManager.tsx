@@ -1,7 +1,12 @@
 import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { api } from '../lib/api';
-import { Role, Permission } from '../types';
+import { apiV2 } from '../lib/api';
+import { Role, Permission, RoleAssignment } from '../types';
+
+// NOTE: All RBAC endpoints live under /admin/v2/rbac (see
+// authy_package/admin/rbac_api.py). They are issued through `apiV2`,
+// whose baseURL is '/admin/v2' — using the v1 client here would prepend
+// the v1 prefix in front of the v2 prefix and break every URL.
 
 // --- Types ---
 
@@ -20,7 +25,7 @@ export const PermissionMatrix: React.FC<{
 }> = ({ selectedPermissions, onToggle }) => {
   const { data: permissions } = useQuery({
     queryKey: ['permissions'],
-    queryFn: () => api.get('/admin/v2/rbac/permissions').then(res => res.data),
+    queryFn: () => apiV2.get('/rbac/permissions').then(res => res.data),
   });
 
   if (!permissions) return <div>Loading permissions...</div>;
@@ -79,11 +84,11 @@ export const RoleManager: React.FC = () => {
 
   const { data: roles, isLoading } = useQuery({
     queryKey: ['roles'],
-    queryFn: () => api.get('/admin/v2/rbac/roles').then(res => res.data),
+    queryFn: () => apiV2.get('/rbac/roles').then(res => res.data),
   });
 
   const createMutation = useMutation({
-    mutationFn: (data: RoleFormData) => api.post('/admin/v2/rbac/roles', data),
+    mutationFn: (data: RoleFormData) => apiV2.post('/rbac/roles', data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
       setIsCreating(false);
@@ -93,7 +98,7 @@ export const RoleManager: React.FC = () => {
 
   const updateMutation = useMutation({
     mutationFn: ({ id, data }: { id: string; data: RoleFormData }) =>
-      api.put(`/admin/v2/rbac/roles/${id}`, data),
+      apiV2.put(`/rbac/roles/${id}`, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
       setEditingRole(null);
@@ -102,7 +107,7 @@ export const RoleManager: React.FC = () => {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => api.delete(`/admin/v2/rbac/roles/${id}`),
+    mutationFn: (id: string) => apiV2.delete(`/rbac/roles/${id}`),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['roles'] });
     },
@@ -167,7 +172,7 @@ export const RoleManager: React.FC = () => {
               <h3 className="text-xl font-bold mb-4">
                 {editingRole ? 'Edit Role' : 'Create New Role'}
               </h3>
-              
+
               <form onSubmit={handleSubmit} className="space-y-4">
                 <div>
                   <label className="block text-sm font-medium text-gray-700 mb-1">Role Name</label>
@@ -296,11 +301,28 @@ export const RoleManager: React.FC = () => {
   );
 };
 
-export const RoleAssignments: React.FC<{ userId: string }> = ({ userId }) => {
+/**
+ * Roles assigned to a user. The backend endpoint
+ * `GET /admin/v2/rbac/users/{user_id}/roles` REQUIRES the `scope_type`
+ * query parameter (and accepts an optional `scope_id`); both are passed
+ * through from props, defaulting to the global scope.
+ */
+export const RoleAssignments: React.FC<{
+  userId: string;
+  scopeType?: RoleAssignment['scope_type'];
+  scopeId?: string;
+}> = ({ userId, scopeType = 'global', scopeId }) => {
   const { data: assignedRoles } = useQuery({
-    queryKey: ['user-roles', userId],
+    queryKey: ['user-roles', userId, scopeType, scopeId],
     queryFn: () =>
-      api.get(`/admin/v2/rbac/users/${userId}/roles`).then(res => res.data),
+      apiV2
+        .get(`/rbac/users/${userId}/roles`, {
+          params: {
+            scope_type: scopeType,
+            ...(scopeId ? { scope_id: scopeId } : {}),
+          },
+        })
+        .then(res => res.data),
   });
 
   return (

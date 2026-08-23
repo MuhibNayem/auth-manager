@@ -1,12 +1,17 @@
 <script setup lang="ts">
 import { ref, computed } from 'vue';
 
-// Props for customization
+// Props for customization.
+// API location is fully configurable: point `apiBaseUrl` at the auth backend
+// origin (default: current origin) and `loginPath` at the login route it
+// serves. The request goes to `${apiBaseUrl}${loginPath}`.
 interface Props {
-  actionUrl?: string;
+  apiBaseUrl?: string;
+  loginPath?: string;
   redirectUrl?: string;
   showSocial?: boolean;
   showMagicLink?: boolean;
+  magicLinkUrl?: string;
   forgotPasswordUrl?: string;
   signUpUrl?: string;
   titleLabel?: string;
@@ -14,19 +19,26 @@ interface Props {
 }
 
 const props = withDefaults(defineProps<Props>(), {
-  actionUrl: '/api/auth/login',
-  redirectUrl: '/dashboard',
+  apiBaseUrl: '',
+  loginPath: '/api/auth/login',
+  // Empty string disables auto-redirect; handle the `success` event instead.
+  redirectUrl: '',
+  // Social buttons navigate to `${apiBaseUrl}/api/auth/social/{provider}` —
+  // implement that route on your backend or set `showSocial` to false.
   showSocial: true,
   showMagicLink: true,
-  forgotPasswordUrl: '/auth/forgot-password',
-  signUpUrl: '/auth/signup',
+  // Optional links render only when a URL is provided, so the component
+  // never asserts routes the host app does not implement.
+  magicLinkUrl: '',
+  forgotPasswordUrl: '',
+  signUpUrl: '',
   titleLabel: 'Welcome back',
   submitLabel: 'Sign In'
 });
 
 // Emits
 const emit = defineEmits<{
-  success: [value: { user: any; token: string }];
+  success: [value: { user: unknown; token: string }];
   error: [value: { message: string }];
 }>();
 
@@ -38,6 +50,8 @@ const error = ref<string | null>(null);
 const success = ref(false);
 
 // Computed
+const actionUrl = computed(() => `${props.apiBaseUrl}${props.loginPath}`);
+
 const isFormValid = computed(() => {
   return email.value.includes('@') && password.value.length >= 8;
 });
@@ -48,7 +62,7 @@ async function handleSubmit() {
   error.value = null;
 
   try {
-    const response = await fetch(props.actionUrl, {
+    const response = await fetch(actionUrl.value, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -68,23 +82,23 @@ async function handleSubmit() {
     success.value = true;
     emit('success', { user: data.user, token: data.access_token });
 
-    // Auto redirect
+    // Auto redirect only when explicitly configured.
     if (props.redirectUrl) {
       setTimeout(() => {
         window.location.href = props.redirectUrl;
       }, 500);
     }
-  } catch (err: any) {
-    error.value = err.message;
-    emit('error', { message: error.value });
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : 'Login failed';
+    error.value = message;
+    emit('error', { message });
   } finally {
     loading.value = false;
   }
 }
 
 function handleSocialLogin(provider: 'google' | 'github') {
-  // Redirect to OAuth endpoint
-  window.location.href = `/api/auth/social/${provider}`;
+  window.location.href = `${props.apiBaseUrl}/api/auth/social/${provider}`;
 }
 </script>
 
@@ -94,7 +108,7 @@ function handleSocialLogin(provider: 'google' | 'github') {
       <h2 class="authy-title">{{ titleLabel }}</h2>
 
       <div v-if="success" class="authy-success">
-        <p>Success! Redirecting...</p>
+        <p>{{ redirectUrl ? 'Success! Redirecting...' : 'Success! You are signed in.' }}</p>
       </div>
 
       <form v-else @submit.prevent="handleSubmit" class="authy-form">
@@ -150,15 +164,13 @@ function handleSocialLogin(provider: 'google' | 'github') {
         </button>
       </form>
 
-      <!-- Magic Link Option -->
-      <div v-if="showMagicLink && !success" class="authy-divider">OR</div>
-      <a
-        v-if="showMagicLink && !success"
-        href="/auth/magic"
-        class="authy-secondary-button"
-      >
-        Send me a magic link
-      </a>
+      <!-- Magic Link Option (renders only when a URL is configured) -->
+      <template v-if="showMagicLink && magicLinkUrl && !success">
+        <div class="authy-divider">OR</div>
+        <a :href="magicLinkUrl" class="authy-secondary-button">
+          Send me a magic link
+        </a>
+      </template>
 
       <!-- Social Login -->
       <div v-if="showSocial && !success" class="authy-social-grid">
@@ -190,8 +202,8 @@ function handleSocialLogin(provider: 'google' | 'github') {
         </button>
       </div>
 
-      <!-- Sign Up Link -->
-      <p v-if="!success" class="authy-footer">
+      <!-- Sign Up Link (renders only when a URL is configured) -->
+      <p v-if="signUpUrl && !success" class="authy-footer">
         Don't have an account?
         <a :href="signUpUrl">Sign up</a>
       </p>
