@@ -19,12 +19,20 @@ want to exercise via the matching env var:
     AUTHY_GOOGLE_CODE / AUTHY_GITHUB_CODE / AUTHY_FACEBOOK_CODE / AUTHY_APPLE_CODE
 
 Every block that lacks configuration is skipped with a clear message —
-there is no pseudocode in this example.
+there is no pseudocode in this example. Accounts are only linked to
+existing users when the provider reports a VERIFIED email
+(CONTRACTS.md remediation: unverified emails cannot take over accounts).
 """
 
 import asyncio
 import os
 import secrets
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
 os.environ.setdefault("AUTHY_ENV", "development")
@@ -114,9 +122,10 @@ async def main() -> None:
     config.validate()
 
     db = MongoDB(
-        os.environ["AUTHY_DB_URL"],
-        os.environ.get("AUTHY_DB_NAME", "authy_db"),
-        os.environ.get("AUTHY_DB_COLLECTION", "users"),
+        {
+            "url": os.environ["AUTHY_DB_URL"],
+            "db_name": os.environ.get("AUTHY_DB_NAME", "authy_db"),
+        }
     )
     cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
     await db.connect()
@@ -125,12 +134,13 @@ async def main() -> None:
         providers = build_providers()
         auth_manager = SocialAuthManager(
             db=db,
+            config=config,
             cache=cache,
             google_manager=providers.get("google"),
             github_manager=providers.get("github"),
             facebook_manager=providers.get("facebook"),
             apple_manager=providers.get("apple"),
-            mfa_manager=MFAAuthManager(db=db),
+            mfa_manager=MFAAuthManager(db=db, cache=cache, config=config),
         )
 
         if not providers:
@@ -171,16 +181,19 @@ async def main() -> None:
             except AuthyError as exc:
                 print("Provider token refresh error:", exc)
 
-        # Enable + reconfigure MFA for the social user.
+        # Enroll MFA for the social user: begin -> confirm with a real code.
         try:
-            await auth_manager.enable_mfa(email=user_identifier)
-            await auth_manager.reconfigure_mfa(email=user_identifier)
-            print("MFA enabled and reconfigured for", user_identifier)
+            pending = await auth_manager.enable_mfa(email=user_identifier)
+            import pyotp
+
+            code = pyotp.TOTP(pending["mfa_secret"]).now()
+            confirmed = await auth_manager.confirm_mfa(code, email=user_identifier)
+            print("MFA confirmed for", user_identifier, "-", confirmed.get("message"))
         except AuthyError as exc:
             print("MFA error:", exc)
 
-        # Logout.
-        await auth_manager.logout(provider="google", user_identifier=user_identifier)
+        # Logout (revokes provider tokens where supported).
+        await auth_manager.logout(provider="google", user=user)
         print("User logged out:", user_identifier)
     finally:
         await cache.close()

@@ -4,7 +4,7 @@ Runs end-to-end on the built-in in-memory fakes (CONTRACTS.md §4
 ``InMemoryDatabase``, §3 ``InMemoryCache``) — no database, Redis, or
 network access required. Useful as a smoke test of an installation:
 
-    pip install "authy-package[dev]"
+    pip install "authy-package"
     python examples/example_memory_quickstart.py
 
 Token semantics demonstrated (CONTRACTS.md §6):
@@ -17,17 +17,20 @@ The JWT secret below is generated per-process for the demo. Real
 deployments must set ``AUTHY_JWT_SECRET`` explicitly (§2: validate()
 rejects empty/placeholder secrets, and production refuses placeholders).
 
-Status gate (2.0 remediation): this example is written against the
-intended public API (``authy_package.core.auth_manager``). Config load +
-validation, the in-memory fakes, and registration run today; the
-login/refresh/logout steps are verified once the core auth manager
-completes its migration to CONTRACTS.md §3/§6 (see
-docs/REMEDIATION_STATUS_packaging.md, pending-core-migration).
+Verified end-to-end against the 2.0 remediated core auth manager
+(``authy_package.core.auth_manager`` on CONTRACTS.md §3/§6).
 """
 
 import asyncio
 import os
 import secrets
+import sys
+from pathlib import Path
+
+# Allow running directly from a source checkout (``python examples/...``).
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 # --- Environment configuration (read by AuthConfig.from_env) --------------
 # Generate a strong per-run secret for this demo when none is provided.
@@ -62,9 +65,13 @@ async def main() -> None:
 
     try:
         security = SecurityManager(db=db, cache=cache, config=config)
-        mfa = MFAAuthManager(db=db)
+        mfa = MFAAuthManager(db=db, cache=cache, config=config)
         auth = TraditionalAuthManager(
-            db=db, cache=cache, mfa_manager=mfa, security_manager=security
+            db=db,
+            config=config,
+            cache=cache,
+            mfa_manager=mfa,
+            security_manager=security,
         )
 
         # 3. Register.
@@ -94,9 +101,7 @@ async def main() -> None:
             raise AssertionError("old refresh token was accepted after rotation")
 
         # 7. Logout revokes the session behind the access token.
-        await auth.logout_user(
-            access_token=new_tokens["access_token"], username=DEMO_USERNAME
-        )
+        await auth.logout_user(access_token=new_tokens["access_token"])
         print("[logout] ok: session revoked")
 
         print("quick start completed successfully")

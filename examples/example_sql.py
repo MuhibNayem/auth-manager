@@ -1,8 +1,13 @@
-"""Traditional auth flow on a SQL database (PostgreSQL) + Redis.
+"""Traditional auth flow on a SQL database + Redis.
 
-Requires a running PostgreSQL and Redis, plus extras:
+Requires a running SQL database and Redis, plus extras:
 
-    pip install "authy-package[postgresql]"
+    pip install "authy-package[postgresql]"   # or [all]
+
+Works with any SQLAlchemy async URL; SQLite (aiosqlite) is fine for a
+local trial:
+
+    AUTHY_DB_URL=sqlite+aiosqlite:///./authy_demo.db
 
 Environment variables (no secrets are hardcoded):
 
@@ -14,19 +19,24 @@ Environment variables (no secrets are hardcoded):
     MAILJET_API_KEY / MAILJET_API_SECRET   when email is enabled
 
 The demo password is generated per run; real applications collect
-passwords from users over a secure channel.
+passwords from users over a secure channel. The SQL adapter creates its
+own contract tables on connect (CONTRACTS.md §4) — no ORM models are
+supplied by the application.
 """
 
 import asyncio
 import os
 import secrets
+import sys
+from pathlib import Path
+
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
 os.environ.setdefault("AUTHY_ENV", "development")
 os.environ.setdefault("AUTHY_DB_TYPE", "sql")
-
-from sqlalchemy import Boolean, Column, DateTime, String  # noqa: E402
-from sqlalchemy.orm import declarative_base                # noqa: E402
 
 from authy_package.cache.redis_cache import RedisCache     # noqa: E402
 from authy_package.config import AuthConfig                # noqa: E402
@@ -42,40 +52,24 @@ DEMO_PASSWORD = secrets.token_urlsafe(16)
 DEMO_USERNAME = "janedoe"
 DEMO_EMAIL = "jane@example.com"
 
-Base = declarative_base()
-
-
-class User(Base):
-    """ORM model matching the stable user-record keys (CONTRACTS.md §4)."""
-
-    __tablename__ = "users"
-
-    id = Column(String, primary_key=True)
-    username = Column(String, unique=True, nullable=True)
-    email = Column(String, unique=True, nullable=True)
-    phone = Column(String, nullable=True)
-    hashed_password = Column(String, nullable=True)
-    mfa_enabled = Column(Boolean, default=False)
-    mfa_secret = Column(String, nullable=True)
-    created_at = Column(DateTime, nullable=True)
-    updated_at = Column(DateTime, nullable=True)
-    is_active = Column(Boolean, default=True)
-    role = Column(String, default="user")
-
 
 async def main() -> None:
     config = AuthConfig.from_env()
     config.validate()
 
-    db = SQLDatabase(os.environ["AUTHY_DB_URL"], orm_model=User)
+    db = SQLDatabase(os.environ["AUTHY_DB_URL"])
     cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
     await db.connect()
 
     try:
         security = SecurityManager(db=db, cache=cache, config=config)
-        mfa = MFAAuthManager(db=db)
+        mfa = MFAAuthManager(db=db, cache=cache, config=config)
         auth = TraditionalAuthManager(
-            db=db, cache=cache, mfa_manager=mfa, security_manager=security
+            db=db,
+            config=config,
+            cache=cache,
+            mfa_manager=mfa,
+            security_manager=security,
         )
 
         # 1. Register.
@@ -83,7 +77,7 @@ async def main() -> None:
             response = await auth.register_user(
                 username=DEMO_USERNAME, email=DEMO_EMAIL, password=DEMO_PASSWORD
             )
-            print("SQL registration:", response)
+            print("SQL registration:", response.get("message", response))
         except AuthyError as exc:
             print("SQL registration error:", exc)
 
@@ -98,26 +92,27 @@ async def main() -> None:
         print("SQL refresh: rotated token pair")
 
         # 4. Logout.
-        await auth.logout_user(
-            access_token=new_tokens["access_token"], username=DEMO_USERNAME
-        )
+        await auth.logout_user(access_token=new_tokens["access_token"])
         print("SQL logout: session revoked")
 
-        # 5. MFA setup.
-        await auth.enable_mfa(username=DEMO_USERNAME)
-        print("MFA enabled; render mfa_secret as an otpauth:// QR code")
-        await auth.reconfigure_mfa(username=DEMO_USERNAME)
-        print("MFA secret reconfigured")
+        # 5. MFA enrollment: begin -> confirm with a real TOTP code.
+        pending = await auth.enable_mfa(username=DEMO_USERNAME)
+        print(
+            "MFA enrollment started; render otpauth_url as a QR code:",
+            pending.get("otpauth_url", ""),
+        )
+        try:
+            import pyotp
+
+            code = pyotp.TOTP(pending["mfa_secret"]).now()
+            confirmed = await auth.confirm_mfa(code, username=DEMO_USERNAME)
+            print("MFA confirmed:", confirmed.get("message", confirmed))
+        except ImportError:
+            print("pyotp not installed; skipping MFA confirmation")
 
         # 6. Password reset (only when an email provider is configured).
         if os.environ.get("AUTHY_EMAIL_ENABLED", "").lower() == "true":
-            await auth.request_password_reset(
-                email=DEMO_EMAIL,
-                username=None,
-                phone=None,
-                sender_email=os.environ.get("AUTHY_SENDER_EMAIL", "noreply@myapp.example"),
-                sender_name="Support",
-            )
+            await auth.request_password_reset(email=DEMO_EMAIL)
             print("Password reset email requested (token delivered by email only)")
         else:
             print("Skipping password reset (set AUTHY_EMAIL_ENABLED=true to try it)")
