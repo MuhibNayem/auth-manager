@@ -722,7 +722,11 @@ class SocialAuthManager:
         )
 
     async def apple_social_login(
-        self, redirect_uri: str, code: Optional[str] = None, state: Optional[str] = None
+        self,
+        redirect_uri: str,
+        code: Optional[str] = None,
+        state: Optional[str] = None,
+        expected_state: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Apple Sign-In; returns the authorization URL when ``code`` is None."""
         if self.apple_manager is None:
@@ -736,6 +740,9 @@ class SocialAuthManager:
                 redirect_uri, state=auth_state
             )
             return {"authorization_url": authorization_url, "state": auth_state}
+
+        # CSRF state validation (review NEW-8), consistent with other providers.
+        self._check_state(state, expected_state)
 
         access_token_info = await self.apple_manager.get_access_token(code)
         user_info = await self.apple_manager.get_user_info(access_token_info["id_token"])
@@ -785,11 +792,12 @@ class SocialAuthManager:
         email = user_info.get("email")
         username = user_info.get("name") or email
 
+        # Link ONLY on the provider-verified email (review NEW-3): matching
+        # by display name is attacker-controllable and would allow linking
+        # into unrelated accounts.
         existing_user = None
         if email:
             existing_user = await self.db.get_user_by_identifier(email=email)
-        if existing_user is None and username:
-            existing_user = await self.db.get_user_by_identifier(username=username)
 
         if existing_user is not None:
             if not email_verified:

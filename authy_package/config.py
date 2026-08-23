@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Any, List, Optional
 
@@ -35,17 +36,26 @@ VALID_DB_TYPES = ("sql", "mongodb", "dynamodb", "memory")
 #: this package. It must never validate as a real secret.
 PUBLIC_DEFAULT_JWT_SECRET = "your-secret-key-change-in-production"
 
-#: Case-insensitive substrings that mark a value as a placeholder.
-_PLACEHOLDER_MARKERS = (
+#: Long characteristic placeholder phrases. Substring matching is safe for
+#: these: collision with a high-entropy random secret is astronomically
+#: unlikely, and they catch the classic documentation placeholders.
+_PLACEHOLDER_PHRASES = (
     "placeholder",
     "changeme",
-    "change-in-production",
     "change_me",
-    "your-",
-    "example",
-    "dummy",
-    "xxx",
+    "change-in-production",
+    "your-secret",
+    "your_secret",
+    "your-super-secret",
+    "your-password",
 )
+
+#: Short markers are placeholders only when they appear as a DELIMITED token
+#: (e.g. "abc-xxx-def"), so high-entropy random secrets such as
+#: ``secrets.token_urlsafe`` output are never false-positived.
+_PLACEHOLDER_TOKENS = ("xxx", "example", "dummy")
+
+_PLACEHOLDER_SPLIT_RE = re.compile(r"[^a-z0-9]+")
 
 
 # ---------------------------------------------------------------------------
@@ -91,11 +101,19 @@ def _env_float(name: str, default: float) -> float:
 
 
 def _contains_placeholder(value: Optional[str]) -> bool:
-    """Return True when a secret/URL still contains a placeholder marker."""
+    """Return True when a secret/URL still contains a placeholder marker.
+
+    Long characteristic phrases match as substrings; short markers
+    ("xxx", "example", "dummy") must appear as delimited tokens so
+    high-entropy random secrets never false-positive (review NEW-1).
+    """
     if not value:
         return False
     lowered = value.lower()
-    return any(marker in lowered for marker in _PLACEHOLDER_MARKERS)
+    if any(phrase in lowered for phrase in _PLACEHOLDER_PHRASES):
+        return True
+    tokens = _PLACEHOLDER_SPLIT_RE.split(lowered)
+    return any(token in _PLACEHOLDER_TOKENS for token in tokens)
 
 
 # ---------------------------------------------------------------------------

@@ -479,6 +479,11 @@ class OIDCManager:
         self, id_token: str, expected_nonce: Optional[str] = None
     ) -> Dict[str, Any]:
         """Validate signature, issuer, audience, nonce and azp."""
+        if not self.config.issuer:
+            raise ConfigError(
+                "OIDC issuer must be configured (run discovery or set issuer) "
+                "before validating ID tokens"
+            )
         header = jwt.get_unverified_header(id_token)
         kid = header.get("kid")
         jwk = await self._find_jwk(kid)

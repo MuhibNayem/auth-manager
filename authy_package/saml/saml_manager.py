@@ -569,6 +569,19 @@ class SAMLManager:
         # 1. Signature: verify and select the signed assertion to consume.
         assertion = self._verify_and_extract_signed_assertion(root)
 
+        # 1b. Assertion-ID replay ledger (review NEW-2): a captured signed
+        # assertion re-wrapped in a fresh Response must not be accepted twice.
+        assertion_id = assertion.get("ID")
+        if assertion_id:
+            fresh_assertion = await self.db.check_and_record_saml_response_id(
+                f"assertion:{assertion_id}"
+            )
+            if not fresh_assertion:
+                raise ValueError(
+                    f"SAML assertion {assertion_id!r} was already consumed "
+                    "(signed assertion replayed inside a fresh response)"
+                )
+
         # 2. Response-level checks.
         response_id = root.get("ID")
         if response_id:

@@ -382,6 +382,20 @@ class JWTTokenManager:
 # rate limiting / lockout (cache counters, §3.1 keys)
 # ---------------------------------------------------------------------------
 
+_NO_CACHE_RATE_LIMIT_WARNED = False
+
+
+def _warn_rate_limit_no_cache() -> None:
+    """Warn once that rate limiting fails open without a cache (review NEW-9)."""
+    global _NO_CACHE_RATE_LIMIT_WARNED
+    if not _NO_CACHE_RATE_LIMIT_WARNED:
+        _NO_CACHE_RATE_LIMIT_WARNED = True
+        logger.warning(
+            "Login rate limiting is DISABLED: no cache adapter configured "
+            "(fails open). Configure a cache to enforce rate limits."
+        )
+
+
 async def enforce_login_rate_limit(
     cache: AbstractCache,
     identifier: str,
@@ -402,6 +416,9 @@ async def enforce_login_rate_limit(
     """
     if not identifier or not isinstance(identifier, str):
         raise ValueError("identifier must be a non-empty string")
+    if cache is None:
+        _warn_rate_limit_no_cache()
+        return
     if not config.rate_limit_enabled:
         return
 
@@ -444,6 +461,9 @@ async def record_login_failure(
     """
     if not identifier or not isinstance(identifier, str):
         raise ValueError("identifier must be a non-empty string")
+    if cache is None:
+        _warn_rate_limit_no_cache()
+        return
     if not config.rate_limit_enabled:
         return
 
@@ -473,6 +493,8 @@ async def clear_login_failures(
     """Clear failure counters and lockout after a successful login."""
     if not identifier or not isinstance(identifier, str):
         raise ValueError("identifier must be a non-empty string")
+    if cache is None:
+        return
     if not config.rate_limit_enabled:
         return
     await cache.delete(LOGIN_RATE_LIMIT_KEY_TEMPLATE.format(identifier=identifier))

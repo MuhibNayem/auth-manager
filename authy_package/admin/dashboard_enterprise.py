@@ -194,7 +194,10 @@ async def create_api_key(
     return view
 
 
-@enterprise_router.get("/api-keys")
+@enterprise_router.get(
+    "/api-keys",
+    dependencies=[Depends(require_v2_scope("read:only", "api_keys:read"))],
+)
 async def list_api_keys(
     deps: AdminDependencies = Depends(get_admin_deps),
 ) -> Dict[str, Any]:
@@ -226,7 +229,10 @@ async def revoke_api_key(
 # branding / localization / settings (db settings kv)
 # ---------------------------------------------------------------------------
 
-@enterprise_router.get("/config/branding")
+@enterprise_router.get(
+    "/config/branding",
+    dependencies=[Depends(require_v2_scope("read:only", "config:read"))],
+)
 async def get_branding(
     deps: AdminDependencies = Depends(get_admin_deps),
 ) -> Dict[str, Any]:
@@ -252,7 +258,10 @@ async def update_branding(
     return value
 
 
-@enterprise_router.get("/config/localization")
+@enterprise_router.get(
+    "/config/localization",
+    dependencies=[Depends(require_v2_scope("read:only", "config:read"))],
+)
 async def get_localization(
     deps: AdminDependencies = Depends(get_admin_deps),
 ) -> Dict[str, Any]:
@@ -278,7 +287,10 @@ async def update_localization(
     return value
 
 
-@enterprise_router.get("/settings/{key}")
+@enterprise_router.get(
+    "/settings/{key}",
+    dependencies=[Depends(require_v2_scope("read:only", "settings:read"))],
+)
 async def get_setting(
     key: str,
     deps: AdminDependencies = Depends(get_admin_deps),
@@ -392,7 +404,10 @@ async def generate_report(
     }
 
 
-@enterprise_router.get("/reports")
+@enterprise_router.get(
+    "/reports",
+    dependencies=[Depends(require_v2_scope("read:only", "reports:read"))],
+)
 async def list_reports(
     deps: AdminDependencies = Depends(get_admin_deps),
 ) -> Dict[str, Any]:
@@ -401,7 +416,10 @@ async def list_reports(
     return {"reports": index, "total": len(index)}
 
 
-@enterprise_router.get("/reports/{job_id}/download")
+@enterprise_router.get(
+    "/reports/{job_id}/download",
+    dependencies=[Depends(require_v2_scope("read:only", "reports:read"))],
+)
 async def download_report(
     job_id: str,
     deps: AdminDependencies = Depends(get_admin_deps),

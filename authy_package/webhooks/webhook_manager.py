@@ -151,6 +151,11 @@ def sign_payload(secret: str, timestamp: str, payload: Dict[str, Any]) -> str:
     return f"sha256={digest}"
 
 
+#: RFC 6598 shared address space (CGNAT): not covered by ``is_private``;
+#: must be rejected explicitly (review NEW-4).
+_CGNAT_NET = ipaddress.ip_network("100.64.0.0/10")
+
+
 def validate_endpoint_url(url: str, *, env: str = "development") -> str:
     """Validate a webhook endpoint URL for SSRF safety (§7).
 
@@ -206,10 +211,12 @@ def validate_endpoint_url(url: str, *, env: str = "development") -> str:
             or ip.is_reserved
             or ip.is_unspecified
             or ip.is_multicast
+            or (ip.version == 4 and ip in _CGNAT_NET)
         ):
             raise ValueError(
                 f"Webhook URL {url!r} resolves to a forbidden address "
-                f"({ip}: private/loopback/link-local/reserved/unspecified/multicast)"
+                f"({ip}: private/loopback/link-local/reserved/unspecified/"
+                "multicast/CGNAT)"
             )
     return url
 
