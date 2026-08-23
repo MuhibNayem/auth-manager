@@ -141,9 +141,12 @@ class ReCaptchaProvider(AbstractCaptchaProvider):
         
         self._client: Optional[httpx.AsyncClient] = None
     
-    @property
-    async def client(self) -> httpx.AsyncClient:
-        """Lazy initialization of HTTP client."""
+    async def get_client(self) -> httpx.AsyncClient:
+        """Lazily construct the shared async HTTP client.
+
+        This is an async METHOD (not a property): awaiting a coroutine
+        returned by a property is a footgun and defeats client caching.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
         return self._client
@@ -182,7 +185,7 @@ class ReCaptchaProvider(AbstractCaptchaProvider):
         :return: CaptchaVerificationResult with verification status
         """
         try:
-            client = await self.client
+            client = await self.get_client()
             
             # Prepare form data
             data = {

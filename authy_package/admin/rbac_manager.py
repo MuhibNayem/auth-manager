@@ -1,294 +1,410 @@
-"""
-Authy Enterprise RBAC Engine
-State-of-the-Art Role-Based Access Control with Hierarchies, Granular Permissions, and Resource Scoping.
+"""Role-based access control engine (CONTRACTS.md §4 RBAC + §8).
+
+Roles and assignments are persisted through the unified db contract
+(``save_role`` / ``list_roles`` / ``save_role_assignment`` /
+``query_role_assignments`` / ``delete_role_assignment``). The manager keeps
+an in-memory role cache that is loaded from the db at initialization
+(:meth:`RBACManager.create`) and refreshed after every write.
+
+Semantics:
+
+- Four scope levels: ``global``, ``organization``, ``team``, ``resource``.
+  A ``global`` assignment applies to every scope.
+- Role inheritance via ``inherits_from`` (role id) with a strict cycle
+  guard on create/update and a visited-set during evaluation.
+- Permissions are string names (``"audit:read"``); a granted permission
+  ending in ``"*"`` matches as a prefix wildcard (``"admin:*"``).
+- Assignments may carry ``expires_at``; expiry is checked at evaluation
+  time.
+- System roles (``owner``/``admin``/``superadmin`` or ``is_system=True``)
+  cannot be modified or deleted.
 """
 
-from typing import Dict, List, Optional, Set, Any
-from dataclasses import dataclass, field
-from datetime import datetime
-import uuid
+from __future__ import annotations
+
+import logging
+from datetime import datetime, timezone
 from enum import Enum
+from typing import Any, Dict, List, Optional
 
-# --- Core Data Models ---
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.errors import NotFoundError
+
+logger = logging.getLogger("authy.admin.rbac")
+
+__all__ = ["PermissionScope", "RBACManager", "SYSTEM_ROLE_NAMES"]
+
+#: Role names that are always treated as protected system roles.
+SYSTEM_ROLE_NAMES = frozenset({"owner", "admin", "superadmin"})
+
 
 class PermissionScope(str, Enum):
+    """The four RBAC scope levels."""
+
     GLOBAL = "global"
     ORGANIZATION = "organization"
     TEAM = "team"
     RESOURCE = "resource"
 
-@dataclass
-class Permission:
-    """Granular permission definition."""
-    id: str
-    name: str  # e.g., "user:create"
-    description: str
-    category: str  # e.g., "users", "billing", "audit"
-    scope: PermissionScope = PermissionScope.GLOBAL
-    created_at: datetime = field(default_factory=datetime.utcnow)
 
-@dataclass
-class Role:
-    """Role definition with inheritance and permissions."""
-    id: str
-    name: str
-    description: str
-    permissions: Set[str] = field(default_factory=set)  # Set of Permission IDs
-    inherits_from: Optional[str] = None  # ID of parent role
-    is_system: bool = False  # System roles (Admin, Owner) cannot be deleted
-    organization_id: Optional[str] = None  # Null = global role
-    created_at: datetime = field(default_factory=datetime.utcnow)
-    updated_at: datetime = field(default_factory=datetime.utcnow)
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
 
-@dataclass
-class RoleAssignment:
-    """Assignment of a role to a user within a specific scope."""
-    id: str
-    user_id: str
-    role_id: str
-    scope_type: PermissionScope
-    scope_id: Optional[str] = None  # Org ID or Team ID if scoped
-    granted_by: str
-    expires_at: Optional[datetime] = None
-    created_at: datetime = field(default_factory=datetime.utcnow)
 
-# --- RBAC Engine ---
+def _ensure_aware(dt: datetime) -> datetime:
+    """Attach UTC to naive datetimes so comparisons never raise."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _coerce_scope(scope: "PermissionScope | str") -> PermissionScope:
+    if isinstance(scope, PermissionScope):
+        return scope
+    return PermissionScope(scope)
+
+
+def _parse_expiry(value: Any) -> Optional[datetime]:
+    """Parse stored expires_at values (datetime or ISO string)."""
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return _ensure_aware(value)
+    if isinstance(value, str):
+        try:
+            return _ensure_aware(datetime.fromisoformat(value))
+        except ValueError:
+            logger.warning("Unparsable expires_at value: %r", value)
+            return None
+    return None
+
+
+def permission_matches(granted: str, requested: str) -> bool:
+    """True when a granted permission covers the requested one.
+
+    Exact match always works; a grant ending in ``*`` is a prefix wildcard
+    (``"admin:*"`` covers ``"admin:users"``).
+    """
+    if not granted or not requested:
+        return False
+    if granted == requested:
+        return True
+    if granted.endswith("*"):
+        return requested.startswith(granted[:-1])
+    return False
+
 
 class RBACManager:
+    """RBAC engine persisted via the §4 db contract.
+
+    Construct via :meth:`RBACManager.create` so the role cache is loaded
+    from the database before first use::
+
+        rbac = await RBACManager.create(db)
     """
-    High-performance RBAC engine with support for:
-    - Dynamic role creation
-    - Permission inheritance
-    - Resource scoping
-    - Real-time evaluation
-    """
-    
-    def __init__(self, db_interface):
-        self.db = db_interface
-        self._permission_cache: Dict[str, Permission] = {}
-        self._role_cache: Dict[str, Role] = {}
-        self._load_cache()
 
-    def _load_cache(self):
-        """Pre-load roles and permissions for fast evaluation."""
-        # In production, this would load from Redis/DB
-        pass
+    def __init__(self, db: AbstractDatabase) -> None:
+        self.db = db
+        self._roles_by_id: Dict[str, Dict[str, Any]] = {}
+        self._loaded = False
 
-    @staticmethod
-    def _serialize_role(role: Role) -> Dict[str, Any]:
-        role_data = role.__dict__.copy()
-        role_data["permissions"] = list(role.permissions)
-        role_data["created_at"] = role.created_at.isoformat()
-        role_data["updated_at"] = role.updated_at.isoformat()
-        return role_data
+    # -- cache lifecycle ------------------------------------------------------
 
-    @staticmethod
-    def _serialize_assignment(assignment: RoleAssignment) -> Dict[str, Any]:
-        assignment_data = assignment.__dict__.copy()
-        assignment_data["scope_type"] = assignment.scope_type.value
-        assignment_data["created_at"] = assignment.created_at.isoformat()
-        assignment_data["expires_at"] = assignment.expires_at.isoformat() if assignment.expires_at else None
-        return assignment_data
+    @classmethod
+    async def create(cls, db: AbstractDatabase) -> "RBACManager":
+        """Construct a manager and load the role cache from the db."""
+        manager = cls(db)
+        await manager.load()
+        return manager
 
-    # --- Permission Management ---
+    async def load(self) -> None:
+        """(Re)load the role cache from the database."""
+        roles = await self.db.list_roles()
+        self._roles_by_id = {role["id"]: role for role in roles}
+        self._loaded = True
 
-    async def create_permission(self, name: str, description: str, category: str, scope: PermissionScope = PermissionScope.GLOBAL) -> Permission:
-        perm_id = f"perm_{uuid.uuid4().hex[:8]}"
-        permission = Permission(id=perm_id, name=name, description=description, category=category, scope=scope)
-        await self.db.save("permissions", perm_id, permission.__dict__)
-        self._permission_cache[perm_id] = permission
-        return permission
+    async def _ensure_loaded(self) -> None:
+        if not self._loaded:
+            await self.load()
 
-    async def list_permissions(self, category: Optional[str] = None) -> List[Permission]:
-        if category:
-            return [p for p in self._permission_cache.values() if p.category == category]
-        return list(self._permission_cache.values())
+    def _is_system_role(self, role: Dict[str, Any]) -> bool:
+        return bool(role.get("is_system")) or str(role.get("name", "")).lower() in SYSTEM_ROLE_NAMES
 
-    # --- Role Management ---
+    # -- role management ---------------------------------------------------------
 
-    async def create_role(self, name: str, description: str, permissions: List[str], inherits_from: Optional[str] = None, organization_id: Optional[str] = None, is_system: bool = False) -> Role:
-        role_id = f"role_{uuid.uuid4().hex[:8]}"
-        
-        # Validate inheritance
-        if inherits_from and inherits_from not in self._role_cache:
-            raise ValueError(f"Parent role {inherits_from} not found")
+    async def create_role(
+        self,
+        name: str,
+        description: str = "",
+        permissions: Optional[List[str]] = None,
+        *,
+        inherits_from: Optional[str] = None,
+        organization_id: Optional[str] = None,
+        is_system: bool = False,
+    ) -> Dict[str, Any]:
+        """Create a role and refresh the cache.
 
-        role = Role(
-            id=role_id,
-            name=name,
-            description=description,
-            permissions=set(permissions),
-            inherits_from=inherits_from,
-            is_system=is_system,
-            organization_id=organization_id
+        Raises:
+            ValueError: On empty name or unknown/cyclic inheritance.
+            IntegrityError: On duplicate role names (from the db).
+        """
+        if not name or not str(name).strip():
+            raise ValueError("Role name must be a non-empty string")
+        await self._ensure_loaded()
+        if inherits_from is not None:
+            if inherits_from not in self._roles_by_id:
+                raise ValueError(f"Parent role {inherits_from!r} does not exist")
+        role = await self.db.save_role(
+            {
+                "name": str(name).strip(),
+                "description": description,
+                "permissions": list(permissions or []),
+                "inherits_from": inherits_from,
+                "organization_id": organization_id,
+                "is_system": bool(is_system),
+            }
         )
-        
-        await self.db.save("roles", role_id, self._serialize_role(role))
-        self._role_cache[role_id] = role
+        self._roles_by_id[role["id"]] = role
         return role
 
-    async def update_role(self, role_id: str, name: Optional[str] = None, permissions: Optional[List[str]] = None, description: Optional[str] = None):
-        if role_id not in self._role_cache:
-            raise ValueError("Role not found")
-        
-        role = self._role_cache[role_id]
-        if role.is_system:
-            raise PermissionError("Cannot modify system roles")
+    async def update_role(
+        self,
+        role_id: str,
+        *,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        permissions: Optional[List[str]] = None,
+        inherits_from: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update a non-system role; re-checks the inheritance cycle guard."""
+        await self._ensure_loaded()
+        role = self._roles_by_id.get(role_id)
+        if role is None:
+            raise NotFoundError(f"Role {role_id!r} does not exist")
+        if self._is_system_role(role):
+            raise PermissionError("System roles cannot be modified")
 
-        if name: role.name = name
-        if description: role.description = description
-        if permissions is not None: role.permissions = set(permissions)
-        
-        role.updated_at = datetime.utcnow()
-        await self.db.save("roles", role_id, self._serialize_role(role))
-        self._role_cache[role_id] = role
-        return role
+        updates: Dict[str, Any] = {"id": role_id}
+        if name is not None:
+            if not str(name).strip():
+                raise ValueError("Role name must be a non-empty string")
+            updates["name"] = str(name).strip()
+        if description is not None:
+            updates["description"] = description
+        if permissions is not None:
+            updates["permissions"] = list(permissions)
+        if inherits_from is not None:
+            if inherits_from not in self._roles_by_id:
+                raise ValueError(f"Parent role {inherits_from!r} does not exist")
+            self._check_cycle(role_id, inherits_from)
+            updates["inherits_from"] = inherits_from
 
-    async def delete_role(self, role_id: str):
-        if role_id not in self._role_cache:
-            raise ValueError("Role not found")
-        
-        role = self._role_cache[role_id]
-        if role.is_system:
-            raise PermissionError("Cannot delete system roles")
-        
-        # Check if role is in use
-        assignments = await self.db.query("role_assignments", {"role_id": role_id})
-        if assignments:
-            raise ValueError("Cannot delete role assigned to users")
+        # save_role needs the full record for the in-memory adapter's
+        # created_at preservation; merge current state with updates.
+        merged = {key: value for key, value in role.items() if key != "updated_at"}
+        merged.update(updates)
+        updated = await self.db.save_role(merged)
+        self._roles_by_id[updated["id"]] = updated
+        return updated
 
-        del self._role_cache[role_id]
-        await self.db.delete("roles", role_id)
+    async def delete_role(self, role_id: str) -> bool:
+        """Delete a non-system role (db refuses when assignments remain)."""
+        await self._ensure_loaded()
+        role = self._roles_by_id.get(role_id)
+        if role is None:
+            return False
+        if self._is_system_role(role):
+            raise PermissionError("System roles cannot be deleted")
+        removed = await self.db.delete_role(role_id)
+        if removed:
+            self._roles_by_id.pop(role_id, None)
+        return removed
 
-    async def list_roles(self, organization_id: Optional[str] = None) -> List[Role]:
-        roles = list(self._role_cache.values())
-        if organization_id:
-            # Return global roles + org-specific roles
-            return [r for r in roles if r.organization_id is None or r.organization_id == organization_id]
-        return [r for r in roles if r.organization_id is None] # Global only if no org specified
-
-    # --- Assignment Management ---
-
-    async def assign_role(self, user_id: str, role_id: str, scope_type: PermissionScope, scope_id: Optional[str], granted_by: str, expires_at: Optional[datetime] = None) -> RoleAssignment:
-        if role_id not in self._role_cache:
-            raise ValueError("Role not found")
-
-        assignment_id = f"assign_{uuid.uuid4().hex[:8]}"
-        assignment = RoleAssignment(
-            id=assignment_id,
-            user_id=user_id,
-            role_id=role_id,
-            scope_type=scope_type,
-            scope_id=scope_id,
-            granted_by=granted_by,
-            expires_at=expires_at
-        )
-        
-        await self.db.save("role_assignments", assignment_id, self._serialize_assignment(assignment))
-        return assignment
-
-    async def revoke_role(self, assignment_id: str):
-        await self.db.delete("role_assignments", assignment_id)
-
-    async def get_user_roles(self, user_id: str, scope_type: PermissionScope, scope_id: Optional[str]) -> List[Role]:
-        """Get all effective roles for a user in a specific scope."""
-        assignments = await self.db.query("role_assignments", {
-            "user_id": user_id,
-            "scope_type": scope_type.value,
-            "scope_id": scope_id
-        })
-        
-        roles = []
-        for assign in assignments:
-            expires_at = assign.get('expires_at')
-            expires_at_dt = datetime.fromisoformat(expires_at) if isinstance(expires_at, str) else expires_at
-            if expires_at_dt and expires_at_dt < datetime.utcnow():
-                continue # Expired
-            
-            role_id = assign['role_id']
-            if role_id in self._role_cache:
-                roles.append(self._role_cache[role_id])
-        
+    async def list_roles(
+        self, *, organization_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """List roles; with ``organization_id`` returns global + that org's."""
+        await self._ensure_loaded()
+        roles = list(self._roles_by_id.values())
+        if organization_id is not None:
+            roles = [
+                role
+                for role in roles
+                if role.get("organization_id") in (None, organization_id)
+            ]
         return roles
 
-    # --- Evaluation Engine (The Core) ---
+    async def get_role(self, role_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one role by id."""
+        await self._ensure_loaded()
+        return self._roles_by_id.get(role_id)
 
-    async def has_permission(self, user_id: str, permission_name: str, scope_type: PermissionScope, scope_id: Optional[str]) -> bool:
+    def _check_cycle(self, role_id: str, parent_id: str) -> None:
+        """Raise ValueError when setting ``role_id``'s parent creates a cycle."""
+        visited = {role_id}
+        current = parent_id
+        while current is not None:
+            if current in visited:
+                raise ValueError(
+                    f"Role inheritance cycle detected involving {current!r}"
+                )
+            visited.add(current)
+            parent = self._roles_by_id.get(current)
+            current = parent.get("inherits_from") if parent else None
+
+    # -- assignment management ---------------------------------------------------
+
+    async def assign_role(
+        self,
+        user_id: str,
+        role_id: str,
+        *,
+        scope_type: "PermissionScope | str" = PermissionScope.GLOBAL,
+        scope_id: Optional[str] = None,
+        granted_by: str,
+        expires_at: Optional[datetime] = None,
+    ) -> Dict[str, Any]:
+        """Assign a role to a user in a scope.
+
+        ``granted_by`` MUST be the authenticated principal performing the
+        grant (no placeholders). Time-limited assignments pass
+        ``expires_at`` and stop evaluating once expired.
         """
-        Check if a user has a specific permission in a given scope.
-        Resolves inheritance and aggregates permissions from all assigned roles.
-        """
+        if not user_id or not str(user_id).strip():
+            raise ValueError("user_id must be a non-empty string")
+        if not granted_by or not str(granted_by).strip():
+            raise ValueError("granted_by must identify the granting principal")
+        await self._ensure_loaded()
+        if role_id not in self._roles_by_id:
+            raise NotFoundError(f"Role {role_id!r} does not exist")
+        scope = _coerce_scope(scope_type)
+        if scope != PermissionScope.GLOBAL and not scope_id:
+            raise ValueError(f"scope_id is required for scope {scope.value!r}")
+
+        assignment = await self.db.save_role_assignment(
+            {
+                "user_id": user_id,
+                "role_id": role_id,
+                "scope_type": scope.value,
+                "scope_id": scope_id,
+                "granted_by": granted_by,
+                "expires_at": expires_at.isoformat() if expires_at else None,
+                "created_at": _utcnow(),
+            }
+        )
+        logger.info(
+            "Assigned role %s to user %s (scope %s/%s) by %s",
+            role_id,
+            user_id,
+            scope.value,
+            scope_id,
+            granted_by,
+        )
+        return assignment
+
+    async def revoke_assignment(self, assignment_id: str) -> bool:
+        """Delete a role assignment."""
+        return await self.db.delete_role_assignment(assignment_id)
+
+    async def get_user_assignments(
+        self,
+        user_id: str,
+        *,
+        scope_type: Optional["PermissionScope | str"] = None,
+        scope_id: Optional[str] = None,
+        include_expired: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """A user's assignments, expired ones filtered out by default."""
+        kwargs: Dict[str, Any] = {"user_id": user_id}
+        if scope_type is not None:
+            kwargs["scope_type"] = _coerce_scope(scope_type).value
+        if scope_id is not None:
+            kwargs["scope_id"] = scope_id
+        assignments = await self.db.query_role_assignments(**kwargs)
+        if include_expired:
+            return assignments
+        now = _utcnow()
+        active = []
+        for assignment in assignments:
+            expires_at = _parse_expiry(assignment.get("expires_at"))
+            if expires_at is not None and expires_at <= now:
+                continue
+            active.append(assignment)
+        return active
+
+    # -- evaluation ------------------------------------------------------------------
+
+    def _assignment_matches(
+        self,
+        assignment: Dict[str, Any],
+        scope_type: PermissionScope,
+        scope_id: Optional[str],
+    ) -> bool:
+        """Global grants apply everywhere; otherwise scope must match."""
+        if assignment.get("scope_type") == PermissionScope.GLOBAL.value:
+            return True
+        if assignment.get("scope_type") != scope_type.value:
+            return False
+        return assignment.get("scope_id") == scope_id
+
+    async def get_user_roles(
+        self,
+        user_id: str,
+        scope_type: "PermissionScope | str" = PermissionScope.GLOBAL,
+        scope_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Effective (non-expired, scope-matching) roles for a user."""
+        await self._ensure_loaded()
+        scope = _coerce_scope(scope_type)
+        assignments = await self.get_user_assignments(user_id)
+        roles: List[Dict[str, Any]] = []
+        seen: set = set()
+        for assignment in assignments:
+            if not self._assignment_matches(assignment, scope, scope_id):
+                continue
+            role = self._roles_by_id.get(assignment.get("role_id"))
+            if role is not None and role["id"] not in seen:
+                seen.add(role["id"])
+                roles.append(role)
+        return roles
+
+    async def get_effective_permissions(
+        self,
+        user_id: str,
+        scope_type: "PermissionScope | str" = PermissionScope.GLOBAL,
+        scope_id: Optional[str] = None,
+    ) -> List[str]:
+        """All permission names a user holds, incl. inherited ones."""
         roles = await self.get_user_roles(user_id, scope_type, scope_id)
-        
-        # Collect all permissions (direct + inherited)
-        effective_permissions: Set[str] = set()
-        
-        def resolve_role_perms(role: Role, visited: Set[str]):
-            if role.id in visited:
-                return # Prevent circular inheritance
-            visited.add(role.id)
-            
-            effective_permissions.update(role.permissions)
-            
-            if role.inherits_from and role.inherits_from in self._role_cache:
-                parent = self._role_cache[role.inherits_from]
-                resolve_role_perms(parent, visited)
-
+        permissions: set = set()
         for role in roles:
-            resolve_role_perms(role, set())
+            permissions.update(self._resolve_role_permissions(role))
+        return sorted(permissions)
 
-        # Map permission name to ID (simple lookup for demo, usually indexed)
-        perm_id = next((p.id for p in self._permission_cache.values() if p.name == permission_name), None)
-        
-        return perm_id in effective_permissions if perm_id else False
+    def _resolve_role_permissions(self, role: Dict[str, Any]) -> set:
+        """Permissions of a role incl. ancestors; cycle-safe via visited set."""
+        collected: set = set()
+        visited: set = set()
+        stack = [role]
+        while stack:
+            current = stack.pop()
+            if current["id"] in visited:
+                continue
+            visited.add(current["id"])
+            collected.update(current.get("permissions") or [])
+            parent_id = current.get("inherits_from")
+            if parent_id and parent_id in self._roles_by_id:
+                stack.append(self._roles_by_id[parent_id])
+        return collected
 
-    async def get_effective_permissions(self, user_id: str, scope_type: PermissionScope, scope_id: Optional[str]) -> List[str]:
-        """Return list of all permission names a user has."""
-        roles = await self.get_user_roles(user_id, scope_type, scope_id)
-        perm_ids = set()
-        
-        def resolve_role_perms(role: Role, visited: Set[str]):
-            if role.id in visited: return
-            visited.add(role.id)
-            perm_ids.update(role.permissions)
-            if role.inherits_from and role.inherits_from in self._role_cache:
-                resolve_role_perms(self._role_cache[role.inherits_from], visited)
-
-        for role in roles:
-            resolve_role_perms(role, set())
-            
-        return [p.name for p in self._permission_cache.values() if p.id in perm_ids]
-
-# --- Default System Roles Seeder ---
-
-async def seed_system_roles(rbac: RBACManager):
-    """Create default system roles if they don't exist."""
-    # Define standard permissions
-    perms = [
-        ("user:read", "View user details", "users"),
-        ("user:create", "Create new users", "users"),
-        ("user:update", "Update user details", "users"),
-        ("user:delete", "Delete users", "users"),
-        ("role:manage", "Manage roles and permissions", "settings"),
-        ("audit:read", "View audit logs", "audit"),
-        ("audit:export", "Export audit logs", "audit"),
-        ("billing:read", "View billing info", "billing"),
-        ("billing:manage", "Manage billing", "billing"),
-    ]
-    
-    created_perms = {}
-    for name, desc, cat in perms:
-        p = await rbac.create_permission(name, desc, cat)
-        created_perms[name] = p.id
-
-    # Create Owner Role (Inherits nothing, has all)
-    await rbac.create_role(
-        name="Owner",
-        description="Full access to everything",
-        permissions=list(created_perms.values()),
-        is_system=True
-    )
-
-    # Create Admin Role (Inherits Member, adds management)
-    # Note: In a real DB, we'd need IDs first. Simplified here.
-    # This is a conceptual seeder.
+    async def has_permission(
+        self,
+        user_id: str,
+        permission: str,
+        scope_type: "PermissionScope | str" = PermissionScope.GLOBAL,
+        scope_id: Optional[str] = None,
+    ) -> bool:
+        """Check one permission with inheritance + wildcard + expiry."""
+        effective = await self.get_effective_permissions(user_id, scope_type, scope_id)
+        return any(permission_matches(granted, permission) for granted in effective)

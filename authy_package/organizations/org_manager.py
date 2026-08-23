@@ -1,24 +1,56 @@
-"""
-Organization & Multi-Tenancy Management
+"""Organization & multi-tenancy management (CONTRACTS.md §4/§5).
 
-Features:
-- Multi-tenant support
-- Organization hierarchy
-- Role-based access control (RBAC)
-- Team management
-- Invitation system
-- Billing integration ready
+Implements organizations, memberships, and invitations strictly on top of
+the unified database contract (``create_organization``, ``add_org_member``,
+``create_invitation``, ``get_invitation_by_token``, ...).
+
+Key semantics:
+
+- ``OrganizationManager(db, ...)`` — the db contract is required; the email
+  service is OPTIONAL. When ``email_service`` is ``None`` invitations are
+  still created and returned with their accept token — sending is skipped
+  and logged (§5).
+- Slugs get a uniqueness fallback (``acme`` -> ``acme-<hex>``).
+- Member counts are capped per plan (:data:`PLAN_MAX_MEMBERS`).
+- The last owner can neither be removed nor demoted.
+- Invitations expire (``expires_at``) and are single-use: accepting
+  consumes them via ``get_invitation_by_token`` + ``delete_invitation``.
+- Invitation sends are rate-limited via cache counters (§3.1 key schema).
+- Tokens come from ``secrets.token_urlsafe`` (§0.3); ids from
+  ``secrets.token_hex``.
 """
 
-import uuid
-from datetime import datetime
-from typing import Optional, Dict, List, Any
-from dataclasses import dataclass, field
+from __future__ import annotations
+
+import inspect
+import logging
+import re
+import secrets
+from datetime import datetime, timedelta, timezone
 from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.cache.abstract_cache import AbstractCache
+from authy_package.errors import IntegrityError, NotFoundError
+
+logger = logging.getLogger("authy.organizations")
+
+__all__ = [
+    "OrgRole",
+    "InvitationStatus",
+    "PLAN_MAX_MEMBERS",
+    "VALID_PLANS",
+    "OrganizationManager",
+]
+
+#: Cache key for invitation-send rate limiting (§3.1 schema).
+INVITE_RATE_LIMIT_KEY_TEMPLATE = "authy:ratelimit:orginvite:{org_id}"
 
 
 class OrgRole(Enum):
-    """Organization roles"""
+    """Organization membership roles."""
+
     OWNER = "owner"
     ADMIN = "admin"
     MEMBER = "member"
@@ -26,389 +58,432 @@ class OrgRole(Enum):
 
 
 class InvitationStatus(Enum):
-    """Invitation statuses"""
+    """Invitation lifecycle states."""
+
     PENDING = "pending"
     ACCEPTED = "accepted"
     DECLINED = "declined"
     EXPIRED = "expired"
 
 
-@dataclass
-class Organization:
-    """Represents an organization/tenant"""
-    id: str
-    name: str
-    slug: str
-    created_at: datetime
-    updated_at: datetime
-    owner_id: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    is_active: bool = True
-    plan: str = "free"
-    max_members: int = 10
+#: Member caps enforced per plan.
+PLAN_MAX_MEMBERS: Dict[str, int] = {
+    "free": 10,
+    "pro": 50,
+    "enterprise": 1000,
+}
+
+#: Plans accepted by :meth:`OrganizationManager.create_organization`.
+VALID_PLANS = tuple(PLAN_MAX_MEMBERS)
 
 
-@dataclass
-class OrgMember:
-    """Organization member"""
-    id: str
-    org_id: str
-    user_id: str
-    role: OrgRole
-    joined_at: datetime
-    invited_by: Optional[str] = None
-    metadata: Dict[str, Any] = field(default_factory=dict)
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
 
 
-@dataclass
-class Invitation:
-    """Organization invitation"""
-    id: str
-    org_id: str
-    email: str
-    role: OrgRole
-    status: InvitationStatus
-    invited_by: str
-    created_at: datetime
-    expires_at: datetime
-    token: str
+def _ensure_aware(dt: datetime) -> datetime:
+    """Attach UTC to naive datetimes so comparisons never raise."""
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+def _slugify(name: str) -> str:
+    """Derive a URL-safe slug from an organization name."""
+    slug = re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")
+    return slug or "org"
 
 
 class OrganizationManager:
+    """Multi-tenant organizations on top of the §4 db contract.
+
+    Args:
+        db: Required database implementing the unified contract.
+        cache: Optional cache; enables invitation-send rate limiting.
+        email_service: Optional; when ``None`` invitation emails are
+            skipped (logged) but invitations are still created with tokens.
+        invitation_ttl_seconds: Default invitation lifetime (72h).
+        max_invitations_per_window: Rate-limit threshold per org.
+        invitation_rate_window_seconds: Rate-limit window (1h).
     """
-    Multi-tenancy and organization management
-    
-    Usage:
-        org_mgr = OrganizationManager(config, db, cache)
-        org = await org_mgr.create_organization("Acme Corp", user_id)
-        await org_mgr.add_member(org.id, user_id, OrgRole.MEMBER)
-        await org_mgr.send_invitation(org.id, "new@example.com", OrgRole.GUEST)
-    """
-    
-    def __init__(self, config, db, cache):
-        self.config = config
+
+    def __init__(
+        self,
+        db: AbstractDatabase,
+        *,
+        cache: Optional[AbstractCache] = None,
+        email_service: Optional[Any] = None,
+        invitation_ttl_seconds: int = 72 * 3600,
+        max_invitations_per_window: int = 10,
+        invitation_rate_window_seconds: int = 3600,
+    ) -> None:
+        if invitation_ttl_seconds <= 0:
+            raise ValueError("invitation_ttl_seconds must be positive")
         self.db = db
         self.cache = cache
-        self._invitation_ttl = 604800  # 7 days
-    
+        self.email_service = email_service
+        self._invitation_ttl = invitation_ttl_seconds
+        self._max_invites_per_window = max_invitations_per_window
+        self._invite_window_seconds = invitation_rate_window_seconds
+
+    # -- organizations --------------------------------------------------------
+
     async def create_organization(
         self,
         name: str,
         owner_id: str,
+        *,
+        description: Optional[str] = None,
+        plan: str = "free",
         slug: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
-    ) -> Organization:
-        """Create a new organization"""
-        org_id = str(uuid.uuid4())
-        
-        if not slug:
-            slug = self._generate_slug(name)
-        
-        # Check slug uniqueness
-        existing = await self.db.get_organization_by_slug(slug)
-        if existing:
-            slug = f"{slug}-{uuid.uuid4().hex[:6]}"
-        
-        now = datetime.utcnow()
-        org = Organization(
-            id=org_id,
-            name=name,
-            slug=slug,
-            created_at=now,
-            updated_at=now,
-            owner_id=owner_id,
-            metadata=metadata or {},
-            plan="free",
-            max_members=self.config.default_org_max_members
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Create an organization and add the owner as its first member.
+
+        Raises:
+            ValueError: On empty inputs or an unknown plan.
+        """
+        if not name or not str(name).strip():
+            raise ValueError("name must be a non-empty string")
+        if not owner_id or not str(owner_id).strip():
+            raise ValueError("owner_id must be a non-empty string")
+        if plan not in PLAN_MAX_MEMBERS:
+            raise ValueError(
+                f"plan must be one of {VALID_PLANS}, got {plan!r}"
+            )
+
+        base_slug = _slugify(slug or name)
+        candidate_slug = base_slug
+        # Slug uniqueness fallback: append a random suffix on collision.
+        if await self.db.get_organization_by_slug(candidate_slug) is not None:
+            candidate_slug = f"{base_slug}-{secrets.token_hex(3)}"
+
+        org = await self.db.create_organization(
+            {
+                "name": str(name).strip(),
+                "slug": candidate_slug,
+                "description": description,
+                "plan": plan,
+                "max_members": PLAN_MAX_MEMBERS[plan],
+                "owner_id": owner_id,
+                "metadata": dict(metadata or {}),
+                "is_active": True,
+            }
         )
-        
-        # Save organization
-        await self.db.save_organization({
-            "id": org.id,
-            "name": org.name,
-            "slug": org.slug,
-            "created_at": org.created_at.isoformat(),
-            "updated_at": org.updated_at.isoformat(),
-            "owner_id": org.owner_id,
-            "metadata": org.metadata,
-            "is_active": org.is_active,
-            "plan": org.plan,
-            "max_members": org.max_members
-        })
-        
-        # Add owner as member
-        await self._add_member_internal(
-            org.id,
-            owner_id,
-            OrgRole.OWNER,
-            invited_by=None
+        await self.db.add_org_member(
+            org["id"],
+            {"user_id": owner_id, "role": OrgRole.OWNER.value, "added_by": None},
         )
-        
+        logger.info("Created organization %s (%s)", org["id"], org["slug"])
         return org
-    
-    async def get_organization(self, org_id: str) -> Optional[Organization]:
-        """Get organization by ID"""
-        data = await self.db.get_organization(org_id)
-        if not data:
-            return None
-        
-        return self._deserialize_org(data)
-    
-    async def get_organization_by_slug(self, slug: str) -> Optional[Organization]:
-        """Get organization by slug"""
-        data = await self.db.get_organization_by_slug(slug)
-        if not data:
-            return None
-        
-        return self._deserialize_org(data)
-    
-    async def get_user_organizations(self, user_id: str) -> List[Organization]:
-        """Get all organizations a user belongs to"""
-        org_ids = await self.db.get_user_org_ids(user_id)
-        orgs = []
-        
-        for org_id in org_ids:
-            org = await self.get_organization(org_id)
-            if org and org.is_active:
+
+    async def get_organization(self, org_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch an organization by id."""
+        return await self.db.get_organization(org_id)
+
+    async def get_organization_by_slug(self, slug: str) -> Optional[Dict[str, Any]]:
+        """Fetch an organization by slug."""
+        return await self.db.get_organization_by_slug(slug)
+
+    async def update_organization(
+        self, org_id: str, updates: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Update organization fields (name/description/plan/metadata...)."""
+        org = await self.db.update_organization(org_id, updates)
+        if org is None:
+            raise NotFoundError(f"Organization {org_id!r} does not exist")
+        return org
+
+    async def delete_organization(self, org_id: str) -> bool:
+        """Delete an organization and its member/invitation links."""
+        return await self.db.delete_organization(org_id)
+
+    async def get_organizations_paginated(
+        self, *, page: int = 1, page_size: int = 20, search: Optional[str] = None
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Paginated organization listing with optional name/slug search."""
+        if page < 1 or page_size < 1:
+            raise ValueError("page and page_size must be >= 1")
+        rows, _total = await self.db.list_organizations(limit=10000, offset=0)
+        if search:
+            needle = search.lower()
+            rows = [
+                org
+                for org in rows
+                if needle in str(org.get("name", "")).lower()
+                or needle in str(org.get("slug", "")).lower()
+            ]
+        total = len(rows)
+        start = (page - 1) * page_size
+        return rows[start : start + page_size], total
+
+    async def get_user_organizations(self, user_id: str) -> List[Dict[str, Any]]:
+        """All active organizations a user belongs to."""
+        rows, _total = await self.db.list_organizations(limit=10000, offset=0)
+        orgs: List[Dict[str, Any]] = []
+        for org in rows:
+            members = await self.db.get_org_members(org["id"])
+            if any(member.get("user_id") == user_id for member in members):
                 orgs.append(org)
-        
         return orgs
-    
-    async def get_member_role(self, org_id: str, user_id: str) -> Optional[OrgRole]:
-        """Get a user's role in an organization"""
-        member = await self.db.get_org_member(org_id, user_id)
-        if not member:
-            return None
-        
-        return OrgRole(member["role"])
-    
+
+    # -- members ------------------------------------------------------------------
+
     async def add_member(
         self,
         org_id: str,
         user_id: str,
-        role: OrgRole,
-        invited_by: Optional[str] = None
-    ) -> OrgMember:
-        """Add a member to an organization"""
-        org = await self.get_organization(org_id)
-        if not org:
-            raise ValueError("Organization not found")
-        
-        # Check member limit
-        members = await self.get_members(org_id)
-        if len(members) >= org.max_members:
-            raise ValueError("Organization member limit reached")
-        
-        # Check if already member
-        existing = await self.db.get_org_member(org_id, user_id)
-        if existing:
-            raise ValueError("User is already a member")
-        
-        return await self._add_member_internal(org_id, user_id, role, invited_by)
-    
-    async def _add_member_internal(
-        self,
-        org_id: str,
-        user_id: str,
-        role: OrgRole,
-        invited_by: Optional[str]
-    ) -> OrgMember:
-        """Internal method to add member"""
-        member_id = str(uuid.uuid4())
-        now = datetime.utcnow()
-        
-        member = OrgMember(
-            id=member_id,
-            org_id=org_id,
-            user_id=user_id,
-            role=role,
-            joined_at=now,
-            invited_by=invited_by
+        role: "OrgRole | str" = OrgRole.MEMBER,
+        *,
+        added_by: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Add a member, enforcing the plan member cap.
+
+        Raises:
+            NotFoundError: When the organization does not exist.
+            ValueError: When the member limit is reached.
+            IntegrityError: When the user is already a member.
+        """
+        org = await self.db.get_organization(org_id)
+        if org is None:
+            raise NotFoundError(f"Organization {org_id!r} does not exist")
+        if not user_id or not str(user_id).strip():
+            raise ValueError("user_id must be a non-empty string")
+
+        max_members = org.get("max_members", PLAN_MAX_MEMBERS[org.get("plan", "free")])
+        members = await self.db.get_org_members(org_id)
+        if len(members) >= max_members:
+            raise ValueError(
+                f"Organization member limit reached ({max_members} for plan "
+                f"{org.get('plan')!r})"
+            )
+
+        org_role = role.value if isinstance(role, OrgRole) else OrgRole(str(role)).value
+        return await self.db.add_org_member(
+            org_id,
+            {"user_id": user_id, "role": org_role, "added_by": added_by},
         )
-        
-        await self.db.save_org_member({
-            "id": member.id,
-            "org_id": member.org_id,
-            "user_id": member.user_id,
-            "role": member.role.value,
-            "joined_at": member.joined_at.isoformat(),
-            "invited_by": member.invited_by
-        })
-        
-        return member
-    
+
     async def remove_member(self, org_id: str, user_id: str) -> bool:
-        """Remove a member from an organization"""
-        member = await self.db.get_org_member(org_id, user_id)
-        if not member:
+        """Remove a member; refuses to remove the last owner."""
+        members = await self.db.get_org_members(org_id)
+        member = next((m for m in members if m.get("user_id") == user_id), None)
+        if member is None:
             return False
-        
-        # Prevent removing last owner
-        if member["role"] == OrgRole.OWNER.value:
-            owners = await self._get_members_by_role(org_id, OrgRole.OWNER)
+        if member.get("role") == OrgRole.OWNER.value:
+            owners = [m for m in members if m.get("role") == OrgRole.OWNER.value]
             if len(owners) <= 1:
-                raise ValueError("Cannot remove the last owner")
-        
-        await self.db.delete_org_member(org_id, user_id)
-        return True
-    
+                raise PermissionError("Cannot remove the last owner of an organization")
+        return await self.db.remove_org_member(org_id, user_id)
+
     async def update_member_role(
-        self,
-        org_id: str,
-        user_id: str,
-        new_role: OrgRole
-    ) -> bool:
-        """Update a member's role"""
-        member = await self.db.get_org_member(org_id, user_id)
-        if not member:
-            return False
-        
-        await self.db.update_org_member_role(org_id, user_id, new_role.value)
-        return True
-    
-    async def get_members(self, org_id: str) -> List[OrgMember]:
-        """Get all members of an organization"""
-        members_data = await self.db.get_org_members(org_id)
-        return [self._deserialize_member(m) for m in members_data]
-    
-    async def _get_members_by_role(self, org_id: str, role: OrgRole) -> List[OrgMember]:
-        """Get members with specific role"""
-        members = await self.get_members(org_id)
-        return [m for m in members if m.role == role]
-    
+        self, org_id: str, user_id: str, new_role: "OrgRole | str"
+    ) -> Dict[str, Any]:
+        """Change a member's role; refuses to demote the last owner."""
+        org_role = (
+            new_role.value if isinstance(new_role, OrgRole) else OrgRole(str(new_role)).value
+        )
+        members = await self.db.get_org_members(org_id)
+        member = next((m for m in members if m.get("user_id") == user_id), None)
+        if member is None:
+            raise NotFoundError(f"User {user_id!r} is not a member of {org_id!r}")
+        if (
+            member.get("role") == OrgRole.OWNER.value
+            and org_role != OrgRole.OWNER.value
+        ):
+            owners = [m for m in members if m.get("role") == OrgRole.OWNER.value]
+            if len(owners) <= 1:
+                raise PermissionError("Cannot demote the last owner of an organization")
+        updated = await self.db.update_org_member(org_id, user_id, {"role": org_role})
+        if updated is None:
+            raise NotFoundError(f"Member record for {user_id!r} not found")
+        return updated
+
+    async def get_members(self, org_id: str) -> List[Dict[str, Any]]:
+        """List the members of an organization."""
+        return await self.db.get_org_members(org_id)
+
+    async def get_member_role(self, org_id: str, user_id: str) -> Optional[OrgRole]:
+        """Return the member's role, or ``None`` when not a member."""
+        members = await self.db.get_org_members(org_id)
+        for member in members:
+            if member.get("user_id") == user_id:
+                return OrgRole(member.get("role", "member"))
+        return None
+
+    # -- invitations -----------------------------------------------------------------
+
+    async def _enforce_invitation_rate_limit(self, org_id: str) -> None:
+        """Rate-limit invitation sends per organization via cache counters."""
+        if self.cache is None:
+            return
+        key = INVITE_RATE_LIMIT_KEY_TEMPLATE.format(org_id=org_id)
+        count = await self.cache.incr(key)
+        if count == 1:
+            await self.cache.expire(key, self._invite_window_seconds)
+        if count > self._max_invites_per_window:
+            from authy_package.errors import RateLimitError
+
+            raise RateLimitError(
+                "Too many invitations sent for this organization; try again later",
+                retry_after=self._invite_window_seconds,
+                code="invitation_rate_limited",
+            )
+
     async def send_invitation(
         self,
         org_id: str,
         email: str,
-        role: OrgRole,
-        invited_by: str
-    ) -> Invitation:
-        """Send an invitation to join an organization"""
-        org = await self.get_organization(org_id)
-        if not org:
-            raise ValueError("Organization not found")
-        
-        # Check if already invited
-        existing = await self.db.get_pending_invitation(org_id, email)
-        if existing:
-            raise ValueError("Invitation already sent")
-        
-        invitation_id = str(uuid.uuid4())
-        token = str(uuid.uuid4())
-        now = datetime.utcnow()
-        expires_at = now + timedelta(seconds=self._invitation_ttl)
-        
-        invitation = Invitation(
-            id=invitation_id,
-            org_id=org_id,
-            email=email,
-            role=role,
-            status=InvitationStatus.PENDING,
-            invited_by=invited_by,
-            created_at=now,
-            expires_at=expires_at,
-            token=token
+        role: "OrgRole | str" = OrgRole.MEMBER,
+        *,
+        invited_by: str,
+        expires_in_hours: Optional[int] = None,
+        message: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create an invitation (and email it when a service is configured).
+
+        The invitation is ALWAYS created and returned with its accept token;
+        when ``email_service`` is ``None`` the email send is skipped and
+        logged. Tokens are single-use and expire.
+
+        Raises:
+            NotFoundError: When the organization does not exist.
+            ValueError: On a malformed email.
+            IntegrityError: When a pending invitation for the email exists.
+            RateLimitError: When the org's invitation rate limit is hit.
+        """
+        org = await self.db.get_organization(org_id)
+        if org is None:
+            raise NotFoundError(f"Organization {org_id!r} does not exist")
+        if not email or "@" not in email:
+            raise ValueError("email must be a valid email address")
+
+        pending = await self.db.get_pending_invitations(org_id)
+        normalized_email = email.strip().lower()
+        if any(
+            str(inv.get("email", "")).lower() == normalized_email for inv in pending
+        ):
+            raise IntegrityError(
+                f"A pending invitation for {email!r} already exists"
+            )
+
+        await self._enforce_invitation_rate_limit(org_id)
+
+        org_role = role.value if isinstance(role, OrgRole) else OrgRole(str(role)).value
+        ttl = (
+            expires_in_hours * 3600
+            if expires_in_hours and expires_in_hours > 0
+            else self._invitation_ttl
         )
-        
-        await self.db.save_invitation({
-            "id": invitation.id,
-            "org_id": invitation.org_id,
-            "email": invitation.email,
-            "role": invitation.role.value,
-            "status": invitation.status.value,
-            "invited_by": invitation.invited_by,
-            "created_at": invitation.created_at.isoformat(),
-            "expires_at": invitation.expires_at.isoformat(),
-            "token": invitation.token
-        })
-        
-        # Send invitation email
-        invite_link = f"{self.config.base_url}/auth/invite?token={token}"
-        await self.email_service.send_invitation_email(
-            to=email,
-            org_name=org.name,
-            invite_link=invite_link,
-            role=role.value
+        now = _utcnow()
+        invitation = await self.db.create_invitation(
+            {
+                "org_id": org_id,
+                "email": email.strip(),
+                "role": org_role,
+                "status": InvitationStatus.PENDING.value,
+                "invited_by": invited_by,
+                "message": message,
+                "token": secrets.token_urlsafe(32),
+                "created_at": now,
+                "expires_at": now + timedelta(seconds=ttl),
+            }
         )
-        
+
+        if self.email_service is None:
+            logger.info(
+                "Email service not configured; invitation %s for %s created "
+                "without sending email (token available to the caller)",
+                invitation["id"],
+                normalized_email,
+            )
+        else:
+            invite_link = f"/auth/invite?token={invitation['token']}"
+            result = self.email_service.send_invitation_email(
+                to=invitation["email"],
+                org_name=org.get("name"),
+                invite_link=invite_link,
+                role=org_role,
+            )
+            if inspect.isawaitable(result):
+                await result
+            logger.info("Invitation %s emailed to %s", invitation["id"], normalized_email)
+
         return invitation
-    
-    async def accept_invitation(self, token: str, user_id: str) -> Optional[OrgMember]:
-        """Accept an invitation"""
+
+    async def get_pending_invitations(self, org_id: str) -> List[Dict[str, Any]]:
+        """Pending (unexpired) invitations; expired ones are purged."""
+        pending = await self.db.get_pending_invitations(org_id)
+        now = _utcnow()
+        active: List[Dict[str, Any]] = []
+        for invitation in pending:
+            expires_at = invitation.get("expires_at")
+            if expires_at is not None and _ensure_aware(expires_at) <= now:
+                await self.db.delete_invitation(invitation["id"])
+                logger.info("Invitation %s expired and was removed", invitation["id"])
+                continue
+            active.append(invitation)
+        return active
+
+    async def accept_invitation(self, token: str, user_id: str) -> Dict[str, Any]:
+        """Accept an invitation: single-use, expiry-checked, adds membership.
+
+        Raises:
+            ValueError: On a missing token.
+            NotFoundError: When the invitation is unknown, expired, or the
+                accepting user's email does not match.
+            PermissionError: When the organization is at its member cap.
+        """
+        if not token or not isinstance(token, str):
+            raise ValueError("token must be a non-empty string")
         invitation = await self.db.get_invitation_by_token(token)
-        if not invitation:
-            return None
-        
-        # Validate invitation
-        if invitation["status"] != InvitationStatus.PENDING.value:
-            raise ValueError("Invitation is no longer valid")
-        
-        expires_at = datetime.fromisoformat(invitation["expires_at"])
-        if datetime.utcnow() > expires_at:
-            await self.db.update_invitation_status(invitation["id"], InvitationStatus.EXPIRED.value)
-            raise ValueError("Invitation has expired")
-        
-        # Check email matches
-        user = await self.db.get_user(user_id)
-        if user["email"] != invitation["email"]:
-            raise ValueError("Email does not match invitation")
-        
-        # Add member
-        member = await self._add_member_internal(
-            invitation["org_id"],
-            user_id,
-            OrgRole(invitation["role"]),
-            invited_by=invitation["invited_by"]
+        if invitation is None:
+            raise NotFoundError("Invitation not found or already used")
+        if invitation.get("status") != InvitationStatus.PENDING.value:
+            raise NotFoundError("Invitation is no longer valid")
+
+        expires_at = invitation.get("expires_at")
+        if expires_at is not None and _ensure_aware(expires_at) <= _utcnow():
+            await self.db.delete_invitation(invitation["id"])
+            raise NotFoundError("Invitation has expired")
+
+        user = await self.db.get_user_by_id(user_id)
+        if user is None:
+            raise NotFoundError(f"User {user_id!r} does not exist")
+        invited_email = str(invitation.get("email", "")).lower()
+        user_email = str(user.get("email", "")).lower()
+        if invited_email and user_email and invited_email != user_email:
+            raise NotFoundError("This invitation was issued for a different email address")
+
+        # Consume BEFORE adding the member so a failed add cannot leave a
+        # replayable invitation behind; single-use is atomic enough here
+        # because get_invitation_by_token + delete runs in one coroutine.
+        await self.db.delete_invitation(invitation["id"])
+
+        org = await self.db.get_organization(invitation["org_id"])
+        if org is None:
+            raise NotFoundError("The organization for this invitation no longer exists")
+        max_members = org.get("max_members", PLAN_MAX_MEMBERS[org.get("plan", "free")])
+        members = await self.db.get_org_members(org["id"])
+        if len(members) >= max_members:
+            raise PermissionError("Organization member limit reached")
+
+        member = await self.db.add_org_member(
+            org["id"],
+            {
+                "user_id": user_id,
+                "role": invitation.get("role", OrgRole.MEMBER.value),
+                "added_by": invitation.get("invited_by"),
+                "invitation_id": invitation["id"],
+            },
         )
-        
-        # Update invitation status
-        await self.db.update_invitation_status(invitation["id"], InvitationStatus.ACCEPTED.value)
-        
+        logger.info("Invitation %s accepted by user %s", invitation["id"], user_id)
         return member
-    
+
     async def decline_invitation(self, token: str) -> bool:
-        """Decline an invitation"""
+        """Decline (delete) a pending invitation by token."""
         invitation = await self.db.get_invitation_by_token(token)
-        if not invitation:
+        if invitation is None:
             return False
-        
-        await self.db.update_invitation_status(invitation["id"], InvitationStatus.DECLINED.value)
-        return True
-    
-    def _deserialize_org(self, data: Dict) -> Organization:
-        """Convert dict to Organization"""
-        return Organization(
-            id=data["id"],
-            name=data["name"],
-            slug=data["slug"],
-            created_at=datetime.fromisoformat(data["created_at"]),
-            updated_at=datetime.fromisoformat(data["updated_at"]),
-            owner_id=data["owner_id"],
-            metadata=data.get("metadata", {}),
-            is_active=data.get("is_active", True),
-            plan=data.get("plan", "free"),
-            max_members=data.get("max_members", 10)
-        )
-    
-    def _deserialize_member(self, data: Dict) -> OrgMember:
-        """Convert dict to OrgMember"""
-        return OrgMember(
-            id=data["id"],
-            org_id=data["org_id"],
-            user_id=data["user_id"],
-            role=OrgRole(data["role"]),
-            joined_at=datetime.fromisoformat(data["joined_at"]),
-            invited_by=data.get("invited_by")
-        )
-    
-    def _generate_slug(self, name: str) -> str:
-        """Generate URL-friendly slug from name"""
-        import re
-        slug = name.lower().strip()
-        slug = re.sub(r'[^a-z0-9]+', '-', slug)
-        slug = slug.strip('-')
-        return slug or "org"
-
-
-# Import timedelta
-from datetime import timedelta
+        return await self.db.delete_invitation(invitation["id"])

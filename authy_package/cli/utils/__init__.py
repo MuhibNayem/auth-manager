@@ -1,94 +1,176 @@
+"""Shared CLI utilities (config persistence, db access, rendering helpers).
+
+Config files are written with ``0600`` permissions (§0.8); the ``~/.authy``
+directory is created ``0700``. Database access goes through the §4 factory
+``get_database`` — every helper here returns honest "not configured" results
+instead of fake data when the backend is unreachable.
 """
-CLI Utility Functions - Enterprise Grade
-"""
+
+from __future__ import annotations
+
 import asyncio
 import json
 import os
-import sys
-from pathlib import Path
-from typing import Any, Dict, Optional, Callable
+import stat
 from functools import wraps
+from pathlib import Path
+from typing import Any, Callable, Dict, Optional
 
-import aiohttp
 from rich.console import Console
-from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TaskProgressColumn
 from rich.prompt import Confirm, Prompt
 from rich.table import Table
 
 console = Console()
 
+#: Default location of the CLI-managed configuration file.
+DEFAULT_CONFIG_PATH = Path.home() / ".authy" / "config.json"
+
+#: Keys whose values are masked in any printed output.
+_SECRET_KEY_MARKERS = ("secret", "token", "password", "key", "credential")
+
 
 def async_command(func: Callable) -> Callable:
-    """Decorator to run async commands in Click."""
+    """Decorator to run async Click commands via ``asyncio.run``."""
+
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         return asyncio.run(func(*args, **kwargs))
+
     return wrapper
 
 
-async def fetch_with_progress(url: str, headers: Optional[Dict] = None) -> Dict[str, Any]:
-    """Fetch data with progress indicator."""
-    async with aiohttp.ClientSession() as session:
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            TaskProgressColumn(),
-            console=console
-        ) as progress:
-            task = progress.add_task("Fetching...", total=None)
-            try:
-                async with session.get(url, headers=headers) as response:
-                    response.raise_for_status()
-                    return await response.json()
-            except Exception as e:
-                console.print(f"[red]Error fetching {url}: {e}[/red]")
-                raise
+# ---------------------------------------------------------------------------
+# config file handling (0600)
+# ---------------------------------------------------------------------------
+
+def _resolve_config_path(config_path: Optional[str]) -> Path:
+    """Resolve an explicit path, ``AUTHY_CONFIG_FILE`` or the default."""
+    if config_path:
+        return Path(config_path)
+    override = os.getenv("AUTHY_CONFIG_FILE")
+    if override:
+        return Path(override)
+    return DEFAULT_CONFIG_PATH
 
 
 def load_config(config_path: Optional[str] = None) -> Dict[str, Any]:
-    """Load configuration from file or environment."""
-    if config_path:
-        path = Path(config_path)
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    
-    # Try default locations
-    default_paths = [
-        Path.cwd() / 'authy.config.json',
-        Path.home() / '.authy' / 'config.json',
-        Path('/etc/authy/config.json')
-    ]
-    
-    for path in default_paths:
-        if path.exists():
-            with open(path) as f:
-                return json.load(f)
-    
-    # Fall back to environment variables
-    return {
-        'api_key': os.getenv('AUTHY_API_KEY'),
-        'api_secret': os.getenv('AUTHY_API_SECRET'),
-        'region': os.getenv('AUTHY_REGION', 'us-east-1'),
-        'environment': os.getenv('AUTHY_ENV', 'development')
-    }
+    """Load CLI configuration JSON; empty dict when absent/unreadable."""
+    path = _resolve_config_path(config_path)
+    if not path.exists():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
 
 
-def save_config(config: Dict[str, Any], config_path: Optional[str] = None) -> None:
-    """Save configuration to file."""
-    if not config_path:
-        config_dir = Path.home() / '.authy'
-        config_dir.mkdir(parents=True, exist_ok=True)
-        config_path = config_dir / 'config.json'
-    else:
-        config_path = Path(config_path)
-    
-    with open(config_path, 'w') as f:
-        json.dump(config, f, indent=2)
-    
-    console.print(f"[green]✓[/green] Configuration saved to [bold]{config_path}[/bold]")
+def save_config(config: Dict[str, Any], config_path: Optional[str] = None) -> Path:
+    """Persist configuration JSON with ``0600`` permissions.
 
+    The parent directory is created ``0700`` when we own it. Returns the
+    path written.
+    """
+    path = _resolve_config_path(config_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.parent == Path.home() / ".authy":
+        os.chmod(path.parent, stat.S_IRWXU)  # 0700
+
+    payload = json.dumps(config, indent=2, sort_keys=True, default=str) + "\n"
+    # O_NOFOLLOW avoids symlink swaps; 0600 at creation.
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    fd = os.open(str(path), flags, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+    except Exception:
+        raise
+    os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # enforce even if file existed
+    return path
+
+
+def is_secret_key(key: str) -> bool:
+    """True when a config key looks secret and should be masked in output."""
+    lowered = key.lower()
+    return any(marker in lowered for marker in _SECRET_KEY_MARKERS)
+
+
+def mask_value(value: Any) -> str:
+    """Mask all but the last four characters of a value for display."""
+    text = str(value)
+    if len(text) <= 4:
+        return "*" * max(len(text), 4)
+    return f"{'*' * 8}…{text[-4:]}"
+
+
+# ---------------------------------------------------------------------------
+# database access (honest, never faked)
+# ---------------------------------------------------------------------------
+
+def load_auth_config():
+    """Build ``AuthConfig`` from the environment (.env honored when present)."""
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv()
+    except ImportError:
+        pass
+    from authy_package.config import AuthConfig
+
+    return AuthConfig.from_env()
+
+
+#: Process-wide registry of connected memory databases. The in-memory backend
+#: has no persistence by design; reusing one instance per process lets CLI
+#: commands (and tests) see each other's writes within a single process.
+_memory_dbs: Dict[str, Any] = {}
+
+
+async def get_connected_db(config: Optional[Any] = None):
+    """Create and connect the configured database, or ``None``.
+
+    Never raises: callers render "not configured" guidance on ``None``.
+    """
+    from authy_package.db import get_database
+
+    if config is None:
+        try:
+            config = load_auth_config()
+        except Exception:
+            return None
+
+    db_type = getattr(getattr(config, "database", None), "db_type", None)
+    try:
+        if db_type == "memory":
+            db = _memory_dbs.get("memory")
+            if db is None:
+                db = get_database(config)
+                await db.connect()
+                _memory_dbs["memory"] = db
+            return db
+        db = get_database(config)
+        await db.connect()
+        return db
+    except Exception:
+        return None
+
+
+def db_guidance() -> str:
+    """Guidance text printed when no database is reachable."""
+    return (
+        "Database not configured or unreachable.\n"
+        "Set AUTHY_DB_TYPE (sql|mongodb|dynamodb|memory) and AUTHY_DB_URL, "
+        "e.g. for local development:\n"
+        "  AUTHY_DB_TYPE=memory  (no persistence, single process)\n"
+        "  AUTHY_DB_TYPE=sql AUTHY_DB_URL=sqlite+aiosqlite:///./authy.db\n"
+        "Run 'authy doctor' for full diagnostics."
+    )
+
+
+# ---------------------------------------------------------------------------
+# rendering helpers
+# ---------------------------------------------------------------------------
 
 def create_table(title: str, columns: list) -> Table:
     """Create a formatted table."""

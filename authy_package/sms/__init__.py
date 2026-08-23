@@ -1,58 +1,32 @@
-"""
-SMS Module for Authy Package.
+"""SMS module for the Authy package (CONTRACTS.md §0.9).
 
-Provides vendor-agnostic SMS authentication with support for multiple providers.
+Vendor-agnostic SMS verification. The core API (manager + abstractions)
+always imports; provider implementations are imported lazily/guarded so the
+package works whether or not ``twilio``/``boto3`` are installed.
 
-Quick Start:
+Quick start:
     from authy_package.sms import SMSManager, TwilioProvider
-    
-    # Initialize provider (uses environment variables)
-    provider = TwilioProvider.from_env()
-    
-    # Create manager
-    sms_manager = SMSManager(provider=provider, cache=redis_cache)
-    
-    # Send verification code
-    await sms_manager.send_verification_code("+1234567890")
-    
-    # Verify code
-    result = await sms_manager.verify_code("+1234567890", "123456")
 
-Environment Variables:
-    # Twilio
-    TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxx
-    TWILIO_AUTH_TOKEN=your_auth_token
-    TWILIO_FROM_NUMBER=+1234567890
-    
-    # AWS SNS (alternative)
-    AWS_REGION=us-east-1
-    AWS_ACCESS_KEY_ID=AKIA...
-    AWS_SECRET_ACCESS_KEY=secret
+    provider = TwilioProvider.from_env()
+    manager = SMSManager(provider=provider, cache=cache)
+    await manager.send_verification_code("+15551234567")
+    result = await manager.verify_code("+15551234567", "123456")
+
+Environment variables:
+    TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_FROM_NUMBER  (Twilio)
+    AWS_REGION / AWS_SNS_SENDER_ID (+ standard AWS credential chain)  (SNS)
 """
 
 from .abstract_provider import (
     AbstractSMSProvider,
-    SMSMessage,
-    SMSResponse,
-    SMSProviderError,
-    VerificationCodeExpiredError,
     InvalidVerificationCodeError,
-    TooManyAttemptsError
+    SMSMessage,
+    SMSProviderError,
+    SMSResponse,
+    TooManyAttemptsError,
+    VerificationCodeExpiredError,
 )
 from .sms_manager import SMSManager
-
-# Provider implementations
-try:
-    from .twilio_provider import TwilioProvider, TwilioConfig
-    __all__ = ["TwilioProvider", "TwilioConfig"]
-except ImportError:
-    pass
-
-try:
-    from .aws_sns_provider import AWSSNSProvider, AWSSNSConfig
-    __all__ = __all__ + ["AWSSNSProvider", "AWSSNSConfig"]
-except ImportError:
-    pass
 
 __all__ = [
     # Core classes
@@ -60,13 +34,30 @@ __all__ = [
     "AbstractSMSProvider",
     "SMSMessage",
     "SMSResponse",
-    
-    # Exceptions
+    # Exceptions (typed subclasses of authy_package.errors, §1)
     "SMSProviderError",
     "VerificationCodeExpiredError",
     "InvalidVerificationCodeError",
     "TooManyAttemptsError",
-    
-    # Providers (conditionally imported)
-    *(__all__ if '__all__' in dir() else [])
 ]
+
+# Provider availability flags (§0.9 lazy/guarded imports). Each block is
+# independent so ANY combination of missing SDKs imports cleanly — including
+# twilio absent while boto3 is present (the historical NameError path).
+TWILIO_AVAILABLE = False
+try:
+    from .twilio_provider import TwilioConfig, TwilioProvider
+except ImportError:
+    pass
+else:
+    TWILIO_AVAILABLE = True
+    __all__ += ["TwilioProvider", "TwilioConfig"]
+
+AWS_SNS_AVAILABLE = False
+try:
+    from .aws_sns_provider import AWSSNSConfig, AWSSNSProvider
+except ImportError:
+    pass
+else:
+    AWS_SNS_AVAILABLE = True
+    __all__ += ["AWSSNSProvider", "AWSSNSConfig"]

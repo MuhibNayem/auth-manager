@@ -1,1002 +1,476 @@
-"""
-DynamoDB Adapter for Enterprise Authy.
-Production-ready implementation with connection pooling, retries, and full feature parity.
+"""DynamoDB adapter implementing the full §4 contract (CONTRACTS.md).
 
-SECURITY BEST PRACTICES:
-- NEVER pass access_key/secret_key directly in code or config files.
-- Uses boto3's default credential provider chain (in order):
-  1. IAM Roles for EC2/ECS/Lambda - RECOMMENDED for production
-  2. IRSA (IAM Roles for Service Accounts) for EKS - RECOMMENDED for Kubernetes
-  3. Environment Variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY) - Local dev only
-  4. Shared Credentials File (~/.aws/credentials) - Local dev only
-  5. AWS SSO / Process credentials - Enterprise SSO
-  
-For cross-account access, use role_arn assumption with external_id.
+Re-based on the unified :class:`AbstractDatabase` contract while keeping the
+existing single-table-per-entity PK/SK key design. Resilience wiring
+(:class:`CircuitBreaker`, :class:`ObservabilityMixin`, retries) is retained
+from :mod:`authy_package.db.enterprise_utils`.
 
-References:
-- AWS Security Best Practices: https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html
-- Boto3 Credentials: https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html
+Key design (per-entity tables, ``{table_prefix}{entity}``):
+
+===========  ===============================================================
+Entity       Keys
+===========  ===============================================================
+users        ``PK=USER#{id}``, ``SK=PROFILE``, ``GSI1PK=EMAIL#{email}``
+sessions     ``PK=SESSION#{id}``, ``SK=PROFILE``,
+             ``GSI1PK=USER#{user_id}``, ``GSI1SK=SESSION#{id}``
+organizations``PK=ORG#{id}``, ``SK=PROFILE``, ``GSI1PK=SLUG#{slug}``
+org_members  ``PK=ORG#{org_id}``, ``SK=MEMBER#{user_id}``,
+             ``GSI1PK=USER#{user_id}``, ``GSI1SK=ORG#{org_id}``
+invitations  ``PK=INVITE#{id}``, ``SK=PROFILE``
+audit_events ``PK=AUDIT#{event_id}`` (event id in the PK: no same-second
+             collisions), ``SK=PROFILE``, ``GSI1PK=ACTOR#{actor}``,
+             ``GSI2PK=EVENT#{event_type}``, GSI SKs = ISO timestamp
+webhooks     ``PK=WEBHOOK#{id}``, ``SK=PROFILE``
+deliveries   ``PK=DELIVERY#{endpoint_id}``,
+             ``SK=DELIVERY#{created_at}#{id}``
+roles        ``PK=ROLE#{id}``, ``SK=PROFILE``
+assignments  ``PK=ASSIGN#{id}``, ``SK=PROFILE``, ``GSI1PK=USER#{user_id}``
+api_keys     ``PK=APIKEY#{id}``, ``SK=PROFILE``, ``GSI1PK=HASH#{key_hash}``
+settings     ``PK=SETTING#{key}``, ``SK=PROFILE``
+saml reqs    ``PK=SAML_REQ#{request_id}``, ``SK=PROFILE`` (+expires_at TTL)
+saml resp ids``PK=SAML_RESP#{response_id}``, ``SK=PROFILE``
+saml maps    ``PK=SAML_MAP#{name_id}\\x1f{sp_entity_id}``, ``SK=PROFILE``
+oidc         ``PK=OIDC#{issuer}``, ``SK=PROFILE``
+===========  ===============================================================
+
+Atomicity: session revocation and API-key revocation use conditional
+updates; SAML request consume is a conditional ``delete_item`` with
+``ReturnValues=ALL_OLD`` (single statement, exactly one winner); SAML
+response-id recording is a conditional ``put_item``.
+
+Scan-based fallbacks (key design cannot serve these directly; each is
+documented inline and listed in :data:`SCAN_FALLBACK_OPERATIONS`):
+``list_users``, ``count_users``, username/phone identifier lookups and
+identifier-uniqueness checks, ``get_invitation_by_token``,
+``get_pending_invitations``, ``list_organizations``, organization delete
+cascades for invitations, ``list_webhook_endpoints``, ``list_roles``,
+role-name uniqueness checks, ``query_role_assignments``, role-assignment
+existence checks, ``list_api_keys``, audit chain-last lookup, audit
+search/statistics/time-series/pruning without an actor or single
+event_type filter, OIDC slug lookups and slug-uniqueness checks.
 """
+
+from __future__ import annotations
+
 import asyncio
+import hashlib
+import json
 import logging
-from typing import Any, Dict, List, Optional
-from datetime import datetime
+import re
+import secrets
+import time
+from datetime import datetime, timezone
 from decimal import Decimal
+from typing import Any, Dict, List, Optional, Tuple
 
-from .enterprise_abstract import (
-    EnterpriseDatabaseAdapter,
-    DatabaseError,
-    ConnectionError,
-    IntegrityError,
-    NotFoundError
-)
-from .enterprise_utils import (
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.db.enterprise_utils import (
     CircuitBreaker,
     CircuitBreakerConfig,
+    ObservabilityMixin,
     RetryConfig,
     with_retry,
-    ConnectionPool,
-    PoolConfig,
-    ObservabilityMixin
+)
+from authy_package.db.memory import GENESIS_CHECKSUM, OIDC_UPDATABLE_FIELDS
+from authy_package.errors import IntegrityError
+
+try:  # pragma: no cover - trivial import guard
+    from botocore.exceptions import ClientError
+
+    BOTOCORE_AVAILABLE = True
+except ImportError:  # pragma: no cover - exercised only without botocore
+    BOTOCORE_AVAILABLE = False
+    ClientError = None  # type: ignore[assignment,misc]
+
+logger = logging.getLogger("authy.db.dynamodb")
+
+__all__ = ["DynamoDBAdapter", "SCAN_FALLBACK_OPERATIONS"]
+
+#: Fields assigned by the database; excluded from the audit checksum payload.
+_AUDIT_DB_ASSIGNED_FIELDS = frozenset({"id", "sequence", "checksum"})
+
+#: Conditional-check failure code for conditional put/update/delete.
+_CONDITIONAL_CHECK_FAILED = "ConditionalCheckFailedException"
+
+#: Contract methods (or sub-paths of them) served by scan-based fallbacks
+#: because the PK/SK key design cannot serve them with a direct query.
+SCAN_FALLBACK_OPERATIONS = (
+    "list_users",
+    "count_users",
+    "get_user_by_identifier (username/phone)",
+    "create_user/update_user identifier uniqueness (username/phone)",
+    "get_invitation_by_token",
+    "get_pending_invitations",
+    "list_organizations",
+    "delete_organization (invitation cascade lookup)",
+    "list_webhook_endpoints",
+    "list_roles",
+    "save_role name uniqueness check",
+    "query_role_assignments",
+    "delete_role assignment existence check",
+    "list_api_keys",
+    "save_audit_event chain-last lookup",
+    "search_audit_events (without actor or single event_type filter)",
+    "get_audit_statistics",
+    "get_audit_time_series",
+    "delete_audit_events_before",
+    "get_oidc_provider (slug path)",
+    "update_oidc_provider (slug path / slug uniqueness)",
+    "save_oidc_provider slug uniqueness check",
 )
 
-logger = logging.getLogger(__name__)
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
 
 
-class DynamoDBAdapter(EnterpriseDatabaseAdapter, ObservabilityMixin):
+def _iso(dt: datetime) -> str:
+    """ISO-8601 UTC timestamp (lexicographically monotonic)."""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc).isoformat(timespec="microseconds")
+
+
+def _new_id() -> str:
+    """Random id from the secrets module (§0.3)."""
+    return secrets.token_hex(16)
+
+
+def _canonical_json(payload: Dict[str, Any]) -> bytes:
+    """Deterministic JSON encoding for audit checksums (memory.py-exact)."""
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), default=str
+    ).encode("utf-8")
+
+
+def _slugify(value: str) -> str:
+    """Derive a URL-safe slug from a name (memory.py-exact)."""
+    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
+    return slug or "org"
+
+
+def _placeholder(key: str) -> str:
+    """Expression-safe placeholder for a DynamoDB attribute name."""
+    return "#" + re.sub(r"[^0-9A-Za-z_]", "_", str(key))
+
+
+#: Internal key/derived attributes never returned as record fields.
+_INTERNAL_KEYS = frozenset(
+    {"PK", "SK", "GSI1PK", "GSI1SK", "GSI2PK", "GSI2SK"}
+)
+
+
+class DynamoDBAdapter(AbstractDatabase, ObservabilityMixin):
+    """Enterprise-grade DynamoDB adapter for the §4 database contract.
+
+    Args:
+        config: A :class:`~authy_package.config.DatabaseConfig` (its
+            ``connection_string`` is used as the DynamoDB ``endpoint_url``
+            for DynamoDB Local/LocalStack) or a plain dict with keys
+            ``table_prefix``, ``region``, ``endpoint_url``.
     """
-    Enterprise-grade DynamoDB adapter with full Authy feature support.
-    Uses aioboto3 for async operations with secure credential handling.
-    """
 
-    def __init__(self, config: Dict[str, Any]):
-        super().__init__(config)
+    def __init__(self, config: Any = None) -> None:
         ObservabilityMixin.__init__(self)
-        
-        self.table_prefix = config.get('table_prefix', 'authy_')
-        self.region = config.get('region', 'us-east-1')
-        self.role_arn = config.get('role_arn')  # Optional IAM Role ARN to assume
-        self.external_id = config.get('external_id')  # Optional External ID for cross-account
-        self.endpoint_url = config.get('endpoint_url')  # For LocalStack/DynamoDB Local
-        
-        # SECURITY WARNING: Check if user is trying to pass static credentials
-        if 'access_key' in config or 'secret_key' in config:
-            logger.warning(
-                "⚠️  SECURITY RISK: Static AWS credentials detected in config! "
-                "This is NOT recommended for production. "
-                "Please use IAM Roles, IRSA, or environment variables instead. "
-                "See: https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html"
-            )
-        
-        # Circuit breaker for resilience
-        self.circuit_breaker = CircuitBreaker(CircuitBreakerConfig(
-            failure_threshold=5,
-            recovery_timeout=60.0
-        ))
-        
-        # Retry configuration
-        self.retry_config = RetryConfig(
-            max_retries=3,
-            base_delay=0.5,
-            exponential_base=2.0
+        if isinstance(config, dict):
+            cfg = dict(config)
+        else:
+            cfg = {
+                "endpoint_url": (
+                    getattr(config, "connection_string", "") or None
+                ),
+                "table_prefix": getattr(config, "table_prefix", "authy_"),
+                "region": getattr(config, "region", None),
+            }
+        self.config = cfg
+        self.table_prefix = cfg.get("table_prefix", "authy_")
+        self.region = cfg.get("region") or "us-east-1"
+        self.endpoint_url = cfg.get("endpoint_url")
+        self.client = None
+        self.is_connected = False
+
+        # Circuit breaker for resilience (kept from the enterprise wiring).
+        self.circuit_breaker = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=5, recovery_timeout=60.0)
         )
+        self.retry_config = RetryConfig(
+            max_retries=3, base_delay=0.5, exponential_base=2.0
+        )
+        # Serializes hash-chain appends within this process.
+        self._audit_lock = asyncio.Lock()
+
+    # -- lifecycle -----------------------------------------------------------
 
     @with_retry()
     async def connect(self) -> None:
-        """
-        Initialize DynamoDB client using secure credential chain.
-        
-        Credential Resolution Order (aioboto3 follows boto3 chain):
-        1. Explicit credentials in config (NOT RECOMMENDED - triggers warning)
-        2. Environment variables (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)
-        3. Shared credentials file (~/.aws/credentials)
-        4. Config file (~/.aws/config)
-        5. Assume Role provider (if role_arn specified)
-        6. IAM Role for EC2/ECS/Lambda instance metadata
-        7. IAM Role for EKS via IRSA (Kubernetes service account)
-        
-        References:
-        https://boto3.amazonaws.com/v1/documentation/api/latest/guide/credentials.html
-        """
+        """Initialize the DynamoDB client via aioboto3 (credential chain)."""
         try:
             import aioboto3
-            from botocore.exceptions import NoCredentialsError, PartialCredentialsError
-            
-            logger.info(f"Initializing DynamoDB connection in region {self.region}...")
-            
-            # Prepare credential parameters (only if explicitly provided - not recommended)
-            client_kwargs = {
-                'service_name': 'dynamodb',
-                'region_name': self.region,
-                'endpoint_url': self.endpoint_url
-            }
-            
-            # If role_arn is provided, we need to handle STS assumption
-            # Note: aioboto3 doesn't natively support assume_role, so we rely on 
-            # the underlying boto3 credential chain or environment-based role assumption
-            if self.role_arn:
-                logger.info(f"IAM Role ARN specified: {self.role_arn}")
-                logger.warning(
-                    "Note: aioboto3 relies on the underlying boto3 credential chain for role assumption. "
-                    "Ensure your environment is configured for role assumption via: "
-                    "1. AWS_PROFILE with role configuration in ~/.aws/config, OR "
-                    "2. ECS Task Role / EC2 Instance Profile with trust relationship, OR "
-                    "3. EKS IRSA with appropriate IAM annotations on service account."
-                )
-            
-            # Create session - aioboto3 automatically uses boto3's credential chain
-            session = aioboto3.Session()
-            
-            # Only pass explicit credentials if they exist in config (triggers warning in __init__)
-            # This is intentionally kept for local development scenarios only
-            access_key = self.config.get('access_key')
-            secret_key = self.config.get('secret_key')
-            
-            if access_key and secret_key:
-                # Explicit credentials provided (development only)
-                client_kwargs['aws_access_key_id'] = access_key
-                client_kwargs['aws_secret_access_key'] = secret_key
-                logger.warning("Using explicit credentials from config. This should ONLY be used for local development!")
-            else:
-                logger.info("Using default AWS credential provider chain (no explicit credentials provided)")
-            
-            # Initialize client and resource
-            self.client = await session.client(**client_kwargs).__aenter__()
-            self.resource = await session.resource(**client_kwargs).__aenter__()
-            
-            # Verify connectivity and permissions
-            await self._verify_permissions()
-            
-            self.is_connected = True
-            logger.info("DynamoDB connection established successfully")
-            
-        except NoCredentialsError:
-            error_msg = (
-                "AWS credentials not found. Please configure authentication using one of these methods:\n"
-                "  🏢 Production (EC2/ECS/Lambda): Attach an IAM Role with DynamoDB permissions\n"
-                "  ☸️  Kubernetes (EKS): Configure IRSA (IAM Roles for Service Accounts)\n"
-                "  💻 Local Development: \n"
-                "     - Run 'aws configure sso' for SSO-based auth\n"
-                "     - Or set environment variables: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY\n"
-                "     - Or create ~/.aws/credentials file\n"
-                "  🔗 Cross-Account: Use role_arn in config with proper trust relationship\n"
-                "\n"
-                "See AWS Security Best Practices: "
-                "https://docs.aws.amazon.com/securitybestpractices/latest/userguide/credentials.html"
+        except ImportError as exc:  # pragma: no cover
+            raise ImportError(
+                "DynamoDBAdapter requires aioboto3 ('pip install aioboto3')"
+            ) from exc
+
+        logger.info("Initializing DynamoDB connection in region %s...", self.region)
+        client_kwargs: Dict[str, Any] = {
+            "service_name": "dynamodb",
+            "region_name": self.region,
+            "endpoint_url": self.endpoint_url,
+        }
+        access_key = self.config.get("access_key")
+        secret_key = self.config.get("secret_key")
+        if access_key and secret_key:
+            logger.warning(
+                "Using explicit AWS credentials from config; this should ONLY "
+                "be used for local development. Prefer IAM roles/IRSA/SSO."
             )
-            logger.error(error_msg)
-            raise ConnectionError(error_msg)
-            
-        except PartialCredentialsError:
-            error_msg = "Incomplete AWS credentials provided. Check your configuration."
-            logger.error(error_msg)
-            raise ConnectionError(error_msg)
-            
-        except Exception as e:
-            error_msg = f"Failed to connect to DynamoDB: {type(e).__name__}: {e}"
-            logger.error(error_msg)
-            raise ConnectionError(error_msg)
+            client_kwargs["aws_access_key_id"] = access_key
+            client_kwargs["aws_secret_access_key"] = secret_key
+
+        session = aioboto3.Session()
+        self.client = await session.client(**client_kwargs).__aenter__()
+        await self._verify_permissions()
+        self.is_connected = True
+        logger.info("DynamoDB connection established successfully")
 
     async def _verify_permissions(self) -> None:
-        """Verify that the configured credentials have necessary DynamoDB permissions."""
+        """Best-effort permission probe (ListTables); never fails connect."""
         try:
-            # Quick permission check by listing tables (requires dynamodb:ListTables)
-            await self.client.list_tables(limit=1)
+            await self.client.list_tables(Limit=1)
             logger.debug("DynamoDB permissions verified (ListTables successful)")
-        except Exception as e:
-            logger.warning(f"Permission verification failed: {e}")
-            # Don't fail connection, but warn user about potential permission issues
+        except Exception as exc:  # noqa: BLE001 - advisory probe only
+            logger.warning("Permission verification failed: %s", exc)
 
-    async def disconnect(self) -> None:
+    async def close(self) -> None:
         """Close DynamoDB connections."""
-        if hasattr(self, 'client'):
-            await self.client.__aexit__(None, None, None)
-        if hasattr(self, 'resource'):
-            await self.resource.__aexit__(None, None, None)
+        if self.client is not None:
+            exit_method = getattr(self.client, "__aexit__", None)
+            if exit_method is not None:
+                await exit_method(None, None, None)
+            self.client = None
         self.is_connected = False
         logger.info("DynamoDB connections closed")
+
+    async def health_check(self) -> bool:
+        """``True`` when the users table is describable."""
+        if self.client is None:
+            return False
+        start = time.time()
+        try:
+            await self.client.describe_table(
+                TableName=self._get_table_name("users")
+            )
+            logger.debug(
+                "DynamoDB health check OK (%.1fms)",
+                (time.time() - start) * 1000,
+            )
+            return True
+        except Exception:  # noqa: BLE001 - health checks report, never raise
+            logger.exception("DynamoDB health check failed")
+            return False
 
     def _get_table_name(self, entity: str) -> str:
         return f"{self.table_prefix}{entity}"
 
+    async def _execute_with_circuit_breaker(self, operation: str, func, *args, **kwargs):
+        """Execute a DynamoDB operation with breaker + observability."""
+        return await self.execute_with_observation(
+            operation, self.circuit_breaker.call, func, *args, **kwargs
+        )
+
+    @staticmethod
+    def _is_conditional_check_failed(exc: Exception) -> bool:
+        return (
+            ClientError is not None
+            and isinstance(exc, ClientError)
+            and exc.response.get("Error", {}).get("Code")
+            == _CONDITIONAL_CHECK_FAILED
+        )
+
+    # -- serialization ---------------------------------------------------------
+
     def _serialize_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert Python types to DynamoDB-compatible types."""
-        serialized = {}
-        for key, value in item.items():
-            if isinstance(value, str):
-                serialized[key] = {'S': value}
-            elif isinstance(value, (int, float)):
-                serialized[key] = {'N': str(value)}
-            elif isinstance(value, bool):
-                serialized[key] = {'BOOL': value}
-            elif isinstance(value, dict):
-                serialized[key] = {'M': self._serialize_item(value)}
-            elif isinstance(value, list):
-                if len(value) == 0:
-                    serialized[key] = {'L': []}
-                elif isinstance(value[0], str):
-                    serialized[key] = {'SS': value}
-                elif isinstance(value[0], (int, float)):
-                    serialized[key] = {'NS': [str(v) for v in value]}
-                else:
-                    serialized[key] = {'L': [self._serialize_item({'v': v})['v'] for v in value]}
-            elif isinstance(value, datetime):
-                serialized[key] = {'S': value.isoformat()}
-            elif value is None:
-                serialized[key] = {'NULL': True}
-            else:
-                serialized[key] = {'S': str(value)}
-        return serialized
+        """Convert Python types to DynamoDB attribute types."""
+        return {key: self._serialize_value(value) for key, value in item.items()}
+
+    def _serialize_value(self, value: Any) -> Dict[str, Any]:
+        # bool MUST be checked before int (bool is an int subclass).
+        if isinstance(value, bool):
+            return {"BOOL": value}
+        if isinstance(value, str):
+            return {"S": value}
+        if isinstance(value, (int, float)):
+            return {"N": str(value)}
+        if isinstance(value, datetime):
+            return {"S": _iso(value)}
+        if isinstance(value, dict):
+            return {"M": self._serialize_item(value)}
+        if isinstance(value, (list, tuple)):
+            values = list(value)
+            if not values:
+                return {"L": []}
+            if all(isinstance(v, str) for v in values):
+                return {"SS": values}
+            if all(isinstance(v, bool) for v in values):
+                return {"L": [{"BOOL": v} for v in values]}
+            if all(
+                isinstance(v, (int, float)) and not isinstance(v, bool)
+                for v in values
+            ):
+                return {"NS": [str(v) for v in values]}
+            return {"L": [self._serialize_value(v) for v in values]}
+        if value is None:
+            return {"NULL": True}
+        return {"S": str(value)}
 
     def _deserialize_item(self, item: Dict[str, Any]) -> Dict[str, Any]:
-        """Convert DynamoDB types back to Python types."""
+        """Convert DynamoDB attribute types back to Python types."""
         if not item:
             return {}
-        
-        deserialized = {}
-        for key, value in item.items():
-            if 'S' in value:
-                deserialized[key] = value['S']
-            elif 'N' in value:
-                num = Decimal(value['N'])
-                deserialized[key] = int(num) if num % 1 == 0 else float(num)
-            elif 'BOOL' in value:
-                deserialized[key] = value['BOOL']
-            elif 'M' in value:
-                deserialized[key] = self._deserialize_item(value['M'])
-            elif 'L' in value:
-                deserialized[key] = [self._deserialize_item({'v': v})['v'] for v in value['L']]
-            elif 'SS' in value:
-                deserialized[key] = value['SS']
-            elif 'NS' in value:
-                deserialized[key] = [float(n) for n in value['NS']]
-            elif 'NULL' in value:
-                deserialized[key] = None
-        return deserialized
-
-    async def _execute_with_circuit_breaker(self, operation: str, func, *args, **kwargs):
-        """Execute DynamoDB operation with circuit breaker and observability."""
-        return await self.execute_with_observation(
-            operation,
-            self.circuit_breaker.call,
-            func,
-            *args,
-            **kwargs
-        )
-
-    # ==================== USER MANAGEMENT ====================
-
-    async def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('users')
-        
-        # Check for existing user
-        identifier = user_data.get('email') or user_data.get('username')
-        if identifier:
-            existing = await self.get_user_by_identifier(identifier)
-            if existing:
-                raise IntegrityError(f"User with identifier {identifier} already exists")
-        
-        item = {
-            'PK': f"USER#{user_data['id']}",
-            'SK': "PROFILE",
-            'GSI1PK': f"EMAIL#{user_data.get('email', '')}",
-            'GSI1SK': "PROFILE",
-            'created_at': datetime.utcnow().isoformat(),
-            **user_data
+        return {
+            key: self._deserialize_value(value) for key, value in item.items()
         }
-        
-        await self._execute_with_circuit_breaker(
-            'create_user',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item),
-            ConditionExpression='attribute_not_exists(PK)'
-        )
-        
-        return user_data
 
-    async def get_user_by_id(self, user_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('users')
-        
+    def _deserialize_value(self, value: Dict[str, Any]) -> Any:
+        if "S" in value:
+            return value["S"]
+        if "N" in value:
+            number = Decimal(value["N"])
+            return int(number) if number % 1 == 0 else float(number)
+        if "BOOL" in value:
+            return value["BOOL"]
+        if "M" in value:
+            return self._deserialize_item(value["M"])
+        if "L" in value:
+            return [self._deserialize_value(v) for v in value["L"]]
+        if "SS" in value:
+            return list(value["SS"])
+        if "NS" in value:
+            numbers = []
+            for raw in value["NS"]:
+                number = Decimal(raw)
+                numbers.append(int(number) if number % 1 == 0 else float(number))
+            return numbers
+        if "NULL" in value:
+            return None
+        return None
+
+    @staticmethod
+    def _record_from_item(item: Dict[str, Any]) -> Dict[str, Any]:
+        """Strip internal key attributes from a deserialized item."""
+        return {
+            key: value
+            for key, value in item.items()
+            if key not in _INTERNAL_KEYS
+        }
+
+    async def _get_record(
+        self, table_name: str, pk: str, sk: str = "PROFILE"
+    ) -> Optional[Dict[str, Any]]:
+        """Direct-key fetch; returns a clean record or ``None``."""
         response = await self._execute_with_circuit_breaker(
-            'get_user_by_id',
+            "get_item",
             self.client.get_item,
             TableName=table_name,
-            Key={'PK': {'S': f"USER#{user_id}"}, 'SK': {'S': 'PROFILE'}}
+            Key={"PK": {"S": pk}, "SK": {"S": sk}},
         )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
+        item = response.get("Item")
+        if not item:
+            return None
+        return self._record_from_item(self._deserialize_item(item))
 
-    async def get_user_by_identifier(self, identifier: str, identifier_type: str = 'email') -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('users')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_user_by_identifier',
-            self.client.query,
-            TableName=table_name,
-            IndexName='GSI1Index',
-            KeyConditionExpression='GSI1PK = :pk AND GSI1SK = :sk',
-            ExpressionAttributeValues={
-                ':pk': {'S': f"{identifier_type.upper()}#{identifier}"},
-                ':sk': {'S': 'PROFILE'}
-            }
-        )
-        
-        items = response.get('Items', [])
-        return self._deserialize_item(items[0]) if items else None
-
-    async def update_user(self, user_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('users')
-        
-        update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in update_data.keys())
-        expr_attr_names = {f"#{k}": k for k in update_data.keys()}
-        expr_attr_values = self._serialize_item(update_data)
-        
-        await self._execute_with_circuit_breaker(
-            'update_user',
-            self.client.update_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"USER#{user_id}"}, 'SK': {'S': 'PROFILE'}},
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames=expr_attr_names,
-            ExpressionAttributeValues=expr_attr_values,
-            ReturnValues='ALL_NEW'
-        )
-        
-        return {**update_data, 'id': user_id}
-
-    async def delete_user(self, user_id: str) -> bool:
-        table_name = self._get_table_name('users')
-        
-        await self._execute_with_circuit_breaker(
-            'delete_user',
-            self.client.delete_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"USER#{user_id}"}, 'SK': {'S': 'PROFILE'}}
-        )
-        
-        return True
-
-    async def list_users(self, org_id: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('users')
-        
-        if org_id:
-            # Query by organization
-            response = await self._execute_with_circuit_breaker(
-                'list_users_by_org',
-                self.client.query,
-                TableName=table_name,
-                IndexName='GSI2Index',
-                KeyConditionExpression='GSI2PK = :pk',
-                ExpressionAttributeValues={':pk': {'S': f"ORG#{org_id}"}},
-                Limit=limit
-            )
-        else:
-            # Scan all users (use sparingly in production)
-            response = await self._execute_with_circuit_breaker(
-                'list_users',
-                self.client.scan,
-                TableName=table_name,
-                Limit=limit
-            )
-        
-        items = response.get('Items', [])
-        return [self._deserialize_item(item) for item in items]
-
-    # ==================== ORGANIZATION & TENANCY ====================
-    
-    async def create_organization(self, org_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('organizations')
-        
-        item = {
-            'PK': f"ORG#{org_data['id']}",
-            'SK': "PROFILE",
-            'GSI1PK': f"SLUG#{org_data.get('slug', '')}",
-            'GSI1SK': "PROFILE",
-            'created_at': datetime.utcnow().isoformat(),
-            **org_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'create_organization',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item),
-            ConditionExpression='attribute_not_exists(PK)'
-        )
-        
-        return org_data
-
-    async def get_organization(self, org_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('organizations')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_organization',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"ORG#{org_id}"}, 'SK': {'S': 'PROFILE'}}
-        )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
-
-    async def update_organization(self, org_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('organizations')
-        
-        update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in update_data.keys())
-        expr_attr_names = {f"#{k}": k for k in update_data.keys()}
-        expr_attr_values = self._serialize_item(update_data)
-        
-        await self._execute_with_circuit_breaker(
-            'update_organization',
-            self.client.update_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"ORG#{org_id}"}, 'SK': {'S': 'PROFILE'}},
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames=expr_attr_names,
-            ExpressionAttributeValues=expr_attr_values,
-            ReturnValues='ALL_NEW'
-        )
-        
-        return {**update_data, 'id': org_id}
-
-    async def add_org_member(self, org_id: str, user_id: str, role: str) -> Dict[str, Any]:
-        table_name = self._get_table_name('org_members')
-        
-        item = {
-            'PK': f"ORG#{org_id}",
-            'SK': f"MEMBER#{user_id}",
-            'role': role,
-            'joined_at': datetime.utcnow().isoformat(),
-            'user_id': user_id,
-            'org_id': org_id
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'add_org_member',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return item
-
-    async def remove_org_member(self, org_id: str, user_id: str) -> bool:
-        table_name = self._get_table_name('org_members')
-        
-        await self._execute_with_circuit_breaker(
-            'remove_org_member',
-            self.client.delete_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"ORG#{org_id}"}, 'SK': {'S': f"MEMBER#{user_id}"}}
-        )
-        
-        return True
-
-    async def get_org_members(self, org_id: str, role_filter: Optional[str] = None) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('org_members')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_org_members',
-            self.client.query,
-            TableName=table_name,
-            KeyConditionExpression='PK = :pk',
-            ExpressionAttributeValues={':pk': {'S': f"ORG#{org_id}"}}
-        )
-        
-        items = response.get('Items', [])
-        members = [self._deserialize_item(item) for item in items]
-        
-        if role_filter:
-            members = [m for m in members if m.get('role') == role_filter]
-        
-        return members
-
-    async def get_user_orgs(self, user_id: str) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('org_members')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_user_orgs',
-            self.client.query,
-            TableName=table_name,
-            IndexName='GSI1Index',
-            KeyConditionExpression='GSI1PK = :pk',
-            ExpressionAttributeValues={':pk': {'S': f"USER#{user_id}"}}
-        )
-        
-        items = response.get('Items', [])
-        org_ids = [item['org_id']['S'] for item in items]
-        
-        # Fetch organization details
-        orgs = []
-        for org_id in org_ids:
-            org = await self.get_organization(org_id)
-            if org:
-                orgs.append(org)
-        
-        return orgs
-
-    # ==================== SESSION MANAGEMENT ====================
-
-    async def create_session(self, session_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('sessions')
-        
-        item = {
-            'PK': f"SESSION#{session_data['id']}",
-            'SK': "ACTIVE",
-            'GSI1PK': f"USER#{session_data['user_id']}",
-            'GSI1SK': f"SESSION#{session_data['id']}",
-            'expires_at': session_data.get('expires_at'),
-            **session_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'create_session',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return session_data
-
-    async def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('sessions')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_session',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"SESSION#{session_id}"}, 'SK': {'S': 'ACTIVE'}}
-        )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
-
-    async def update_session(self, session_id: str, update_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('sessions')
-        
-        update_expr = "SET " + ", ".join(f"#{k} = :{k}" for k in update_data.keys())
-        expr_attr_names = {f"#{k}": k for k in update_data.keys()}
-        expr_attr_values = self._serialize_item(update_data)
-        
-        await self._execute_with_circuit_breaker(
-            'update_session',
-            self.client.update_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"SESSION#{session_id}"}, 'SK': {'S': 'ACTIVE'}},
-            UpdateExpression=update_expr,
-            ExpressionAttributeNames=expr_attr_names,
-            ExpressionAttributeValues=expr_attr_values,
-            ReturnValues='ALL_NEW'
-        )
-        
-        return {**update_data, 'id': session_id}
-
-    async def revoke_session(self, session_id: str) -> bool:
-        table_name = self._get_table_name('sessions')
-        
-        # Move to revoked state instead of deleting (for audit)
-        await self._execute_with_circuit_breaker(
-            'revoke_session',
-            self.client.update_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"SESSION#{session_id}"}, 'SK': {'S': 'ACTIVE'}},
-            UpdateExpression='SET #status = :status, #revoked_at = :revoked_at',
-            ExpressionAttributeNames={'#status': 'status', '#revoked_at': 'revoked_at'},
-            ExpressionAttributeValues={
-                ':status': {'S': 'revoked'},
-                ':revoked_at': {'S': datetime.utcnow().isoformat()}
-            }
-        )
-        
-        return True
-
-    async def revoke_all_user_sessions(self, user_id: str, exclude_session_id: Optional[str] = None) -> int:
-        sessions = await self.get_active_sessions(user_id)
-        count = 0
-        
-        for session in sessions:
-            if exclude_session_id and session['id'] == exclude_session_id:
-                continue
-            await self.revoke_session(session['id'])
-            count += 1
-        
-        return count
-
-    async def get_active_sessions(self, user_id: str) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('sessions')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_active_sessions',
-            self.client.query,
-            TableName=table_name,
-            IndexName='GSI1Index',
-            KeyConditionExpression='GSI1PK = :pk AND begins_with(GSI1SK, :sk_prefix)',
-            ExpressionAttributeValues={
-                ':pk': {'S': f"USER#{user_id}"},
-                ':sk_prefix': {'S': 'SESSION#'}
-            }
-        )
-        
-        items = response.get('Items', [])
-        return [self._deserialize_item(item) for item in items]
-
-    # ==================== AUDIT LOGGING ====================
-
-    async def write_audit_log(self, log_entry: Dict[str, Any]) -> str:
-        table_name = self._get_table_name('audit_logs')
-        log_id = f"AUDIT#{datetime.utcnow().timestamp()}#{log_entry.get('actor_id', 'system')}"
-        
-        item = {
-            'PK': log_id,
-            'SK': f"EVENT#{log_entry.get('event_type', 'unknown')}",
-            'GSI1PK': f"ACTOR#{log_entry.get('actor_id', 'system')}",
-            'GSI1SK': f"TIME#{datetime.utcnow().isoformat()}",
-            'GSI2PK': f"EVENT#{log_entry.get('event_type', 'unknown')}",
-            'GSI2SK': f"TIME#{datetime.utcnow().isoformat()}",
-            **log_entry
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'write_audit_log',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return log_id
-
-    async def query_audit_logs(
-        self, 
-        filters: Dict[str, Any], 
-        start_date: datetime, 
-        end_date: datetime, 
-        limit: int = 100
+    async def _scan_all(
+        self,
+        table_name: str,
+        *,
+        filter_expression: Optional[str] = None,
+        expression_attribute_values: Optional[Dict[str, Any]] = None,
+        expression_attribute_names: Optional[Dict[str, str]] = None,
     ) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('audit_logs')
-        
-        # Build query based on filters
-        key_condition = 'GSI1SK BETWEEN :start AND :end'
-        expr_values = {
-            ':start': {'S': start_date.isoformat()},
-            ':end': {'S': end_date.isoformat()}
-        }
-        
-        if filters.get('actor_id'):
-            expr_values[':pk'] = {'S': f"ACTOR#{filters['actor_id']}"}
-            key_condition = 'GSI1PK = :pk AND ' + key_condition
-        elif filters.get('event_type'):
-            expr_values[':pk'] = {'S': f"EVENT#{filters['event_type']}"}
-            key_condition = 'GSI2PK = :pk AND GSI2SK BETWEEN :start AND :end'
-        
-        response = await self._execute_with_circuit_breaker(
-            'query_audit_logs',
-            self.client.query,
-            TableName=table_name,
-            IndexName='GSI1Index' if 'actor_id' in filters else 'GSI2Index',
-            KeyConditionExpression=key_condition,
-            ExpressionAttributeValues=expr_values,
-            Limit=limit
-        )
-        
-        items = response.get('Items', [])
-        return [self._deserialize_item(item) for item in items]
-
-    async def export_audit_logs(
-        self, 
-        filters: Dict[str, Any], 
-        format: str = 'json'
-    ) -> bytes:
-        import json
-        import csv
-        import io
-        
-        logs = await self.query_audit_logs(filters, datetime.min, datetime.max, limit=10000)
-        
-        if format.lower() == 'csv':
-            output = io.StringIO()
-            if logs:
-                writer = csv.DictWriter(output, fieldnames=logs[0].keys())
-                writer.writeheader()
-                writer.writerows(logs)
-            return output.getvalue().encode('utf-8')
-        else:
-            return json.dumps(logs, indent=2).encode('utf-8')
-
-    # ==================== MFA & SECURITY ====================
-
-    async def save_mfa_secret(self, user_id: str, secret_data: Dict[str, Any]) -> None:
-        table_name = self._get_table_name('mfa_secrets')
-        
-        item = {
-            'PK': f"USER#{user_id}",
-            'SK': "MFA",
-            **secret_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'save_mfa_secret',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-
-    async def get_mfa_secret(self, user_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('mfa_secrets')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_mfa_secret',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"USER#{user_id}"}, 'SK': {'S': 'MFA'}}
-        )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
-
-    async def record_login_attempt(self, user_id: str, success: bool, ip: str, user_agent: str) -> None:
-        table_name = self._get_table_name('login_attempts')
-        
-        item = {
-            'PK': f"USER#{user_id}",
-            'SK': f"ATTEMPT#{datetime.utcnow().isoformat()}",
-            'success': success,
-            'ip': ip,
-            'user_agent': user_agent
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'record_login_attempt',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-
-    async def get_failed_login_count(self, user_id: str, window_minutes: int) -> int:
-        table_name = self._get_table_name('login_attempts')
-        from datetime import timedelta
-        
-        window_start = (datetime.utcnow() - timedelta(minutes=window_minutes)).isoformat()
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_failed_login_count',
-            self.client.query,
-            TableName=table_name,
-            KeyConditionExpression='PK = :pk AND SK > :start',
-            FilterExpression='success = :success',
-            ExpressionAttributeValues={
-                ':pk': {'S': f"USER#{user_id}"},
-                ':start': {'S': f"ATTEMPT#{window_start}"},
-                ':success': {'BOOL': False}
-            }
-        )
-        
-        return len(response.get('Items', []))
-
-    # ==================== WEBHOOKS ====================
-
-    async def create_webhook_subscription(self, sub_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('webhooks')
-        
-        item = {
-            'PK': f"WEBHOOK#{sub_data['id']}",
-            'SK': "ACTIVE",
-            'GSI1PK': f"EVENT#{sub_data.get('event_type', 'all')}",
-            'GSI1SK': f"WEBHOOK#{sub_data['id']}",
-            **sub_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'create_webhook_subscription',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return sub_data
-
-    async def get_webhook_subscriptions(self, event_type: Optional[str] = None) -> List[Dict[str, Any]]:
-        table_name = self._get_table_name('webhooks')
-        
-        if event_type:
+        """Scan a whole table (all pages). DOCUMENTED FALLBACK where used."""
+        kwargs: Dict[str, Any] = {"TableName": table_name}
+        if filter_expression:
+            kwargs["FilterExpression"] = filter_expression
+        if expression_attribute_values:
+            kwargs["ExpressionAttributeValues"] = expression_attribute_values
+        if expression_attribute_names:
+            kwargs["ExpressionAttributeNames"] = expression_attribute_names
+        items: List[Dict[str, Any]] = []
+        while True:
             response = await self._execute_with_circuit_breaker(
-                'get_webhook_subscriptions_by_event',
-                self.client.query,
-                TableName=table_name,
-                IndexName='GSI1Index',
-                KeyConditionExpression='GSI1PK = :pk',
-                ExpressionAttributeValues={':pk': {'S': f"EVENT#{event_type}"}}
+                "scan", self.client.scan, **kwargs
             )
-        else:
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
+
+    async def _query_all(self, **kwargs: Any) -> List[Dict[str, Any]]:
+        """Query all pages for a key condition."""
+        items: List[Dict[str, Any]] = []
+        while True:
             response = await self._execute_with_circuit_breaker(
-                'get_webhook_subscriptions',
-                self.client.scan,
-                TableName=table_name,
-                FilterExpression='begins_with(SK, :sk)',
-                ExpressionAttributeValues={':sk': {'S': 'ACTIVE'}}
+                "query", self.client.query, **kwargs
             )
-        
-        items = response.get('Items', [])
-        return [self._deserialize_item(item) for item in items]
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+        return items
 
-    async def record_webhook_delivery(self, subscription_id: str, success: bool, response_code: int, payload: str) -> None:
-        table_name = self._get_table_name('webhook_deliveries')
-        
-        item = {
-            'PK': f"WEBHOOK#{subscription_id}",
-            'SK': f"DELIVERY#{datetime.utcnow().isoformat()}",
-            'success': success,
-            'response_code': response_code,
-            'payload': payload[:1024]  # Truncate large payloads
+    async def _update_record(
+        self,
+        table_name: str,
+        pk: str,
+        sk: str,
+        updates: Dict[str, Any],
+        *,
+        condition_expression: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Parameterized SET update; returns ALL_NEW record or ``None``.
+
+        All keys go through ExpressionAttributeNames/Values placeholders —
+        caller input is never interpolated into the expression string.
+        """
+        set_parts = []
+        names: Dict[str, str] = {}
+        values: Dict[str, Any] = {}
+        for key, value in updates.items():
+            placeholder = _placeholder(key)
+            # Avoid placeholder collisions for keys differing only in
+            # non-alphanumeric characters.
+            unique_placeholder = placeholder
+            suffix = 0
+            while unique_placeholder in names:
+                suffix += 1
+                unique_placeholder = f"{placeholder}{suffix}"
+            names[unique_placeholder] = key
+            values[f":u{len(values)}"] = self._serialize_value(value)
+            set_parts.append(f"{unique_placeholder} = :u{len(values) - 1}")
+        kwargs: Dict[str, Any] = {
+            "TableName": table_name,
+            "Key": {"PK": {"S": pk}, "SK": {"S": sk}},
+            "UpdateExpression": "SET " + ", ".join(set_parts),
+            "ExpressionAttributeNames": names,
+            "ExpressionAttributeValues": values,
+            "ReturnValues": "ALL_NEW",
         }
-        
-        await self._execute_with_circuit_breaker(
-            'record_webhook_delivery',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-
-    # ==================== SAML & OIDC ====================
-
-    async def register_saml_provider(self, provider_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('saml_providers')
-        
-        item = {
-            'PK': f"SAML#{provider_data['entity_id']}",
-            'SK': "CONFIG",
-            **provider_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'register_saml_provider',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return provider_data
-
-    async def get_saml_provider(self, entity_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('saml_providers')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_saml_provider',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"SAML#{entity_id}"}, 'SK': {'S': 'CONFIG'}}
-        )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
-
-    async def create_saml_session(self, session_data: Dict[str, Any]) -> str:
-        table_name = self._get_table_name('saml_sessions')
-        request_id = session_data['request_id']
-        
-        item = {
-            'PK': f"SAML_SESSION#{request_id}",
-            'SK': "STATE",
-            'expires_at': (datetime.utcnow().timestamp() + 300),  # 5 min TTL
-            **session_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'create_saml_session',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return request_id
-
-    async def consume_saml_session(self, request_id: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('saml_sessions')
-        
-        response = await self._execute_with_circuit_breaker(
-            'consume_saml_session',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"SAML_SESSION#{request_id}"}, 'SK': {'S': 'STATE'}}
-        )
-        
-        item = response.get('Item')
-        if item:
-            # Delete after consumption
-            await self._execute_with_circuit_breaker(
-                'delete_saml_session',
-                self.client.delete_item,
-                TableName=table_name,
-                Key={'PK': {'S': f"SAML_SESSION#{request_id}"}, 'SK': {'S': 'STATE'}}
-            )
-            return self._deserialize_item(item)
-        
-        return None
-
-    async def register_oidc_provider(self, provider_data: Dict[str, Any]) -> Dict[str, Any]:
-        table_name = self._get_table_name('oidc_providers')
-        
-        item = {
-            'PK': f"OIDC#{provider_data['issuer']}",
-            'SK': "CONFIG",
-            **provider_data
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'register_oidc_provider',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-        
-        return provider_data
-
-    async def get_oidc_provider(self, issuer: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('oidc_providers')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_oidc_provider',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"OIDC#{issuer}"}, 'SK': {'S': 'CONFIG'}}
-        )
-        
-        return self._deserialize_item(response.get('Item')) if 'Item' in response else None
-
-    async def link_external_identity(self, user_id: str, provider_type: str, subject: str) -> None:
-        table_name = self._get_table_name('external_identities')
-        
-        item = {
-            'PK': f"EXTERNAL#{provider_type}#{subject}",
-            'SK': "LINK",
-            'user_id': user_id,
-            'provider_type': provider_type,
-            'subject': subject,
-            'linked_at': datetime.utcnow().isoformat()
-        }
-        
-        await self._execute_with_circuit_breaker(
-            'link_external_identity',
-            self.client.put_item,
-            TableName=table_name,
-            Item=self._serialize_item(item)
-        )
-
-    async def get_user_by_external_identity(self, provider_type: str, subject: str) -> Optional[Dict[str, Any]]:
-        table_name = self._get_table_name('external_identities')
-        
-        response = await self._execute_with_circuit_breaker(
-            'get_user_by_external_identity',
-            self.client.get_item,
-            TableName=table_name,
-            Key={'PK': {'S': f"EXTERNAL#{provider_type}#{subject}"}, 'SK': {'S': 'LINK'}}
-        )
-        
-        item = response.get('Item')
-        if item:
-            deserialized = self._deserialize_item(item)
-            return await self.get_user_by_id(deserialized['user_id'])
-        
-        return None
-
-    # ==================== UTILITIES ====================
-
-    async def health_check(self) -> Dict[str, Any]:
-        start = time.time()
+        if condition_expression:
+            kwargs["ConditionExpression"] = condition_expression
+            # Condition uses the static placeholders :cond_* added by callers
         try:
-            await self.client.describe_table(TableName=self._get_table_name('users'))
-            latency = (time.time() - start) * 1000
-            
-            return {
-                "status": "healthy",
-                "database": "DynamoDB",
-                "latency_ms": round(latency, 2),
-                "region": self.region
-            }
-        except Exception as e:
-            return {
-                "status": "unhealthy",
-                "database": "DynamoDB",
-                "error": str(e),
-                "latency_ms": round((time.time() - start) * 1000, 2)
-            }
-
-    async def run_migration(self, version: str) -> None:
-        logger.info(f"DynamoDB migrations are handled via CloudFormation/CDK. Version: {version}")
-        # DynamoDB is schemaless; migrations involve creating tables/indexes via IaC
+            response = await self._execute_with_circuit_breaker(
+                "update_item", self.client.update_item, **kwargs
+            )
+        except Exception as exc:
+            if self._is_conditional_check_failed(exc):
+                return None
+            raise
+        item = response.get("Attributes")
+        if not item:
+            return None
+        return self._record_from_item(self._deserialize_item(item))
