@@ -7,8 +7,8 @@ import hmac as hmac_mod
 
 import pytest
 
-from authy_package.core.auth_manager import SocialAuthManager
-from authy_package.errors import AuthenticationError
+from tessera.core.auth_manager import SocialAuthManager
+from tessera.errors import AuthenticationError
 
 EXISTING_EMAIL = "taken@example.com"
 
@@ -125,7 +125,7 @@ async def test_state_mismatch_rejected(social):
 # -- provider hardening (real manager logic, no network) ----------------------------
 
 def test_github_authorization_url_has_real_state():
-    from authy_package.social.github import GitHubManager
+    from tessera.social.github import GitHubManager
 
     mgr = GitHubManager("cid", "csecret", "https://app.example.com/cb")
     url, state = mgr.get_authorization_url()
@@ -137,7 +137,7 @@ def test_github_authorization_url_has_real_state():
 
 
 def test_github_validate_state_constant_time():
-    from authy_package.social.github import GitHubManager
+    from tessera.social.github import GitHubManager
 
     assert GitHubManager.validate_state("abc", "abc") is True
     assert GitHubManager.validate_state("abc", "abd") is False
@@ -145,7 +145,7 @@ def test_github_validate_state_constant_time():
 
 
 def test_facebook_appsecret_proof_correct():
-    from authy_package.social.facebook import FacebookManager
+    from tessera.social.facebook import FacebookManager
 
     mgr = FacebookManager("app", "secret", "https://app.example.com/cb")
     expected = hmac_mod.new(
@@ -155,7 +155,7 @@ def test_facebook_appsecret_proof_correct():
 
 
 def test_facebook_tokens_not_in_query_string(monkeypatch):
-    from authy_package.social import facebook as fb_module
+    from tessera.social import facebook as fb_module
 
     captured = {}
 
@@ -181,7 +181,7 @@ def test_facebook_tokens_not_in_query_string(monkeypatch):
 
 
 def test_google_redirect_flow_no_stdin(monkeypatch):
-    from authy_package.social.google import GoogleManager
+    from tessera.social.google import GoogleManager
 
     mgr = GoogleManager("cid", "csecret", "https://app.example.com/cb")
     url, state = mgr.create_authorization_url()

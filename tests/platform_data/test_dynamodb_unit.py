@@ -15,7 +15,7 @@ from typing import Any, Dict, Tuple
 import pytest
 from botocore.exceptions import ClientError
 
-from authy_package.db.dynamodb_adapter import DynamoDBAdapter
+from tessera.db.dynamodb_adapter import DynamoDBAdapter
 
 
 def _conditional_check_failed() -> ClientError:
@@ -142,7 +142,7 @@ class FakeDynamoClient:
 @pytest.fixture
 def adapter() -> DynamoDBAdapter:
     dynamo = DynamoDBAdapter(
-        {"table_prefix": "authy_test_", "region": "us-east-1"}
+        {"table_prefix": "tessera_test_", "region": "us-east-1"}
     )
     dynamo.client = FakeDynamoClient()
     dynamo.is_connected = True
@@ -188,7 +188,7 @@ class TestAuditPkUniqueness:
             {"event_type": "user.login", "actor": "alice", "timestamp": frozen}
         )
         assert first["id"] != second["id"]
-        audit_table = adapter.client.tables["authy_test_audit_events"]
+        audit_table = adapter.client.tables["tessera_test_audit_events"]
         pks = sorted(pk for pk, _ in audit_table)
         assert pks == sorted([f"AUDIT#{first['id']}", f"AUDIT#{second['id']}"])
         assert len(pks) == len(set(pks))
@@ -243,14 +243,14 @@ class TestConditionalConsumes:
         )
         winners = [r for r in results if r is not None]
         assert winners == [{"relay": "/x"}]
-        assert adapter.client.tables["authy_test_saml_requests"] == {}
+        assert adapter.client.tables["tessera_test_saml_requests"] == {}
 
     async def test_saml_consume_expired_returns_none(
         self, adapter: DynamoDBAdapter
     ) -> None:
         await adapter.save_saml_request("req-2", {"x": 1}, ttl_seconds=1)
         # Force the stored expiry into the past.
-        item = adapter.client.tables["authy_test_saml_requests"][
+        item = adapter.client.tables["tessera_test_saml_requests"][
             ("SAML_REQ#req-2", "PROFILE")
         ]
         item["expires_at"] = {"N": "1"}
@@ -262,7 +262,7 @@ class TestConditionalConsumes:
         assert await adapter.check_and_record_saml_response_id("resp-1") is True
         assert await adapter.check_and_record_saml_response_id("resp-1") is False
         await adapter.save_saml_response_id("resp-2", ttl_seconds=1)
-        item = adapter.client.tables["authy_test_saml_response_ids"][
+        item = adapter.client.tables["tessera_test_saml_response_ids"][
             ("SAML_RESP#resp-2", "PROFILE")
         ]
         item["expires_at"] = {"N": "1"}  # expired -> no longer blocks
@@ -286,7 +286,7 @@ class TestContractSignatures:
     async def test_circuit_breaker_and_observability_wired(
         self, adapter: DynamoDBAdapter
     ) -> None:
-        from authy_package.db.enterprise_utils import (
+        from tessera.db.enterprise_utils import (
             CircuitBreaker,
             ObservabilityMixin,
         )

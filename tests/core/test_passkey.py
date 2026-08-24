@@ -5,8 +5,8 @@ from __future__ import annotations
 import pytest
 
 import webauthn
-from authy_package.errors import AuthenticationError
-from authy_package.passwordless.passkey import (
+from tessera.errors import AuthenticationError
+from tessera.passwordless.passkey import (
     AUTH_CHALLENGE_KEY_TEMPLATE,
     REG_CHALLENGE_KEY_TEMPLATE,
     PasskeyManager,

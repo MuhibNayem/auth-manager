@@ -7,7 +7,7 @@ from datetime import timedelta, timezone, datetime
 import pytest
 import pytest_asyncio
 
-from authy_package.admin.rbac_manager import PermissionScope, RBACManager
+from tessera.admin.rbac_manager import PermissionScope, RBACManager
 
 
 @pytest_asyncio.fixture

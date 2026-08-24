@@ -1,6 +1,6 @@
 # Remediation Status — CORE AUTH workstream
 
-Owner: core-auth-fix (coder role). Scope: `authy_package/core`, `sessions`,
+Owner: core-auth-fix (coder role). Scope: `tessera/core`, `sessions`,
 `mfa`, `passwordless`, `password_security`, `saml`, `oidc`, `social`,
 `migration`, `compliance`, package `__init__.py`, and `tests/core`.
 
@@ -12,8 +12,8 @@ All work is implemented against the frozen foundation contracts
 
 - `pytest tests/core tests/foundation -q` — **green** (foundation stays green).
 - `python -m compileall` on every owned directory — **clean**.
-- `python -c "import authy_package; authy_package.get_auth.__doc__"` — works;
-  `import authy_package` succeeds and every name in `__all__` resolves.
+- `python -c "import tessera; tessera.get_auth.__doc__"` — works;
+  `import tessera` succeeds and every name in `__all__` resolves.
 
 ## Numbered defect list → resolution
 
@@ -31,12 +31,12 @@ All work is implemented against the frozen foundation contracts
   attempt limiting.
 - Legacy hashes: when `user["password_algorithm"]` is set and is not
   `bcrypt`/`argon2`, login calls
-  `authy_package.migration.verify_and_upgrade_legacy_hash`, rehashing to
+  `tessera.migration.verify_and_upgrade_legacy_hash`, rehashing to
   bcrypt on success (see item 11).
 - `hashed_password` / `mfa_secret` / backup codes / legacy hash fields are
   stripped from **every** response via `sanitize_user`.
 - `refresh_token` validates the JWT with `expected_type="refresh"` and rotates
-  through the §3.1 cache ledger (old `authy:refresh:{jti}` deleted on use;
+  through the §3.1 cache ledger (old `tessera:refresh:{jti}` deleted on use;
   replay rejected).
 - Duplicated MFA enable/reconfigure logic unified into a single
   `_begin_mfa_setup` helper shared by `TraditionalAuthManager` and
@@ -45,7 +45,7 @@ All work is implemented against the frozen foundation contracts
   `SessionManager` (→ `db.save_session`), logout revokes it
   (`db.revoke_session`).
 
-### 2. `authy_package/__init__.py`
+### 2. `tessera/__init__.py`
 **Fixed.** Fully guarded per §0.9: only the pure `errors`/`config` modules are
 imported eagerly; every other submodule is probed with a try/except that sets a
 `*_AVAILABLE` flag (`CORE_AVAILABLE`, `SESSIONS_AVAILABLE`, …,
@@ -55,13 +55,13 @@ imported eagerly; every other submodule is probed with a try/except that sets a
 successfully, and a PEP 562 `__getattr__` resolves exported names lazily with an
 informative `ImportError` when unavailable. `__version__ = "2.0.0"`. Both
 `get_auth()` and `init_auth()` call `config.validate()` before constructing the
-manager. `import authy_package` succeeds with no optional dependencies present.
+manager. `import tessera` succeeds with no optional dependencies present.
 
 ### 3. `sessions/session_manager.py`
 **Rebuilt.** Uses foundation config attributes (`session_expiry_seconds`,
 `max_concurrent_sessions`) and `JWTTokenManager` (which enforces the token
 `type` claim). Sessions are cached under §3.1 keys
-(`authy:session:{session_id}`, `authy:user_sessions:{user_id}`) and persisted
+(`tessera:session:{session_id}`, `tessera:user_sessions:{user_id}`) and persisted
 through the db contract (`save_session`/`revoke_session`/
 `get_active_sessions`). `validate_session` accepts only access tokens (a
 refresh token is rejected); `refresh_session` rotates both tokens and
@@ -73,24 +73,24 @@ updates run as background tasks whose references are retained.
 **Rewritten.** Enabling MFA is two-step: `setup_mfa` issues a *pending* secret
 and `confirm_mfa` activates it **only after a valid TOTP code** is confirmed.
 Confirmation and verification are attempt-limited via cache counters
-(`authy:ratelimit:mfa:{user_id}`). Code comparison uses pyotp `verify`
+(`tessera:ratelimit:mfa:{user_id}`). Code comparison uses pyotp `verify`
 semantics (constant-time). Eight single-use backup codes are issued at
 activation and stored only as sha256 digests; each is deleted on first use.
 Secrets come from `pyotp.random_base32`.
 
 ### 5. `passwordless/magic_link.py`
 **Rewritten.** Tokens are `secrets.token_urlsafe(32)`, stored under
-`authy:magiclink:{token}` with TTL `config.magic_link_ttl_seconds`.
+`tessera:magiclink:{token}` with TTL `config.magic_link_ttl_seconds`.
 Verification is single-use (get_json → delete; missing record is treated as
 consumed/expired). `redirect_url` is validated against the host of
 `config.default_redirect_url`/`config.base_url` (open redirects rejected).
-Sending is rate-limited via cache counters (`authy:ratelimit:magiclink:{email}`).
+Sending is rate-limited via cache counters (`tessera:ratelimit:magiclink:{email}`).
 Users are auto-created only when `config.auto_create_users` is set. All events
 go through `db.save_audit_event`.
 
 ### 6. `passwordless/passkey.py`
 **Rewritten.** Per-user challenge keys per §3.1
-(`authy:passkey:reg:{user_id}` and `authy:passkey:auth:{user_id}:{challenge}`).
+(`tessera:passkey:reg:{user_id}` and `tessera:passkey:auth:{user_id}:{challenge}`).
 Challenges are generated by the `webauthn` library and the library-generated
 challenge is stored and returned consistently (base64url). Challenges are
 single-use. Credentials persist through the db settings kv. The `webauthn`
@@ -178,7 +178,7 @@ nonce/state enforcement, legacy-hash upgrade login, and the audit report
 function.
 
 ## Risks / notes
-- `authy_package/saml` signing/verification depends on the `xmlsec` native
+- `tessera/saml` signing/verification depends on the `xmlsec` native
   library (installed in the venv); ID attributes are registered via
   `ctx.register_id` so `Reference URI="#ID"` resolves.
 - The Firebase scrypt verifier implements the documented export pipeline

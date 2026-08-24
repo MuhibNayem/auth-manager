@@ -14,14 +14,14 @@ import pytest
 def _reload_sms_package() -> None:
     """Drop cached sms modules and re-import fresh."""
     for name in [
-        "authy_package.sms.twilio_provider",
-        "authy_package.sms.aws_sns_provider",
-        "authy_package.sms.sms_manager",
-        "authy_package.sms.abstract_provider",
-        "authy_package.sms",
+        "tessera.sms.twilio_provider",
+        "tessera.sms.aws_sns_provider",
+        "tessera.sms.sms_manager",
+        "tessera.sms.abstract_provider",
+        "tessera.sms",
     ]:
         sys.modules.pop(name, None)
-    importlib.import_module("authy_package.sms")
+    importlib.import_module("tessera.sms")
 
 
 @pytest.fixture
@@ -29,18 +29,18 @@ def restore_sms_modules():
     """Ensure the real sms modules are restored after module poisoning."""
     yield
     for name in [
-        "authy_package.sms.twilio_provider",
-        "authy_package.sms.aws_sns_provider",
-        "authy_package.sms.sms_manager",
-        "authy_package.sms.abstract_provider",
-        "authy_package.sms",
+        "tessera.sms.twilio_provider",
+        "tessera.sms.aws_sns_provider",
+        "tessera.sms.sms_manager",
+        "tessera.sms.abstract_provider",
+        "tessera.sms",
     ]:
         sys.modules.pop(name, None)
-    importlib.import_module("authy_package.sms")
+    importlib.import_module("tessera.sms")
 
 
 def test_sms_imports_with_all_providers():
-    import authy_package.sms as sms
+    import tessera.sms as sms
 
     assert "SMSManager" in sms.__all__
     assert sms.TWILIO_AVAILABLE is True
@@ -58,7 +58,7 @@ def test_sms_import_without_twilio_boto3_present(monkeypatch, restore_sms_module
     import boto3  # noqa: F401 — precondition of the regression
 
     _reload_sms_package()
-    sms = importlib.import_module("authy_package.sms")
+    sms = importlib.import_module("tessera.sms")
 
     assert sms.TWILIO_AVAILABLE is False
     assert sms.AWS_SNS_AVAILABLE is True
@@ -73,7 +73,7 @@ def test_sms_import_without_boto3_twilio_present(monkeypatch, restore_sms_module
         monkeypatch.setitem(sys.modules, poisoned, None)
 
     _reload_sms_package()
-    sms = importlib.import_module("authy_package.sms")
+    sms = importlib.import_module("tessera.sms")
 
     assert sms.TWILIO_AVAILABLE is True
     assert sms.AWS_SNS_AVAILABLE is False
@@ -94,7 +94,7 @@ def test_sms_import_without_both_providers(monkeypatch, restore_sms_modules):
         monkeypatch.setitem(sys.modules, poisoned, None)
 
     _reload_sms_package()
-    sms = importlib.import_module("authy_package.sms")
+    sms = importlib.import_module("tessera.sms")
 
     assert sms.TWILIO_AVAILABLE is False
     assert sms.AWS_SNS_AVAILABLE is False

@@ -7,8 +7,8 @@ import hashlib
 
 import pytest
 
-from authy_package.core.auth_manager import sanitize_user
-from authy_package.errors import AuthenticationError, RateLimitError, TokenError
+from tessera.core.auth_manager import sanitize_user
+from tessera.errors import AuthenticationError, RateLimitError, TokenError
 
 PASSWORD = "Str0ng!Passw0rd#2024"
 

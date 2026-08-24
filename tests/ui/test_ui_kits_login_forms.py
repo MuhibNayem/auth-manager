@@ -11,7 +11,7 @@ Guards the fixes for:
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-UI_KITS = REPO_ROOT / "authy_package" / "ui_kits"
+UI_KITS = REPO_ROOT / "tessera" / "ui_kits"
 SVELTE = (UI_KITS / "svelte" / "LoginForm.svelte").read_text(encoding="utf-8")
 VUE = (UI_KITS / "vue" / "LoginForm.vue").read_text(encoding="utf-8")
 

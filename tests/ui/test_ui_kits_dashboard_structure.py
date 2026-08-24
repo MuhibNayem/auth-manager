@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DASHBOARD = REPO_ROOT / "authy_package" / "ui_kits" / "react" / "admin-dashboard"
+DASHBOARD = REPO_ROOT / "tessera" / "ui_kits" / "react" / "admin-dashboard"
 
 
 def strip_jsonc(text: str) -> str:

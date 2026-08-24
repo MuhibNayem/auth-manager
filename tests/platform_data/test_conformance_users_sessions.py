@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from authy_package.db.abstract_db import AbstractDatabase
-from authy_package.errors import IntegrityError
+from tessera.db.abstract_db import AbstractDatabase
+from tessera.errors import IntegrityError
 
 
 

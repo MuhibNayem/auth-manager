@@ -1,4 +1,4 @@
-"""``authy audit`` / ``authy logs`` / dashboard honesty tests."""
+"""``tessera audit`` / ``tessera logs`` / dashboard honesty tests."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import csv
 import io
 import json
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 
 def _seed_events(db):
@@ -60,7 +60,7 @@ def test_audit_export_json_and_csv_files(runner, memory_db, tmp_path):
 
 
 def test_audit_search_without_db_guidance(runner, monkeypatch):
-    monkeypatch.setenv("AUTHY_DB_TYPE", "sql")
+    monkeypatch.setenv("TESSERA_DB_TYPE", "sql")
     result = runner.invoke(cli, ["audit", "search"])
     assert result.exit_code == 1
     assert "not configured" in result.output
@@ -85,8 +85,8 @@ def test_logs_follow_polls_honestly_with_bounded_iterations(runner, memory_db):
 
 
 def test_dashboard_renders_not_connected_without_db(runner, monkeypatch):
-    monkeypatch.setenv("AUTHY_DB_TYPE", "sql")
-    monkeypatch.delenv("AUTHY_DB_URL", raising=False)
+    monkeypatch.setenv("TESSERA_DB_TYPE", "sql")
+    monkeypatch.delenv("TESSERA_DB_URL", raising=False)
     result = runner.invoke(cli, ["dashboard"])
     assert result.exit_code == 0, result.output
     assert "not connected" in result.output

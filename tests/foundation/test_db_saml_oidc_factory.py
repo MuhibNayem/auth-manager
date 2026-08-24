@@ -7,9 +7,9 @@ import time
 
 import pytest
 
-from authy_package.config import AuthConfig, DatabaseConfig
-from authy_package.db import InMemoryDatabase, get_database
-from authy_package.errors import ConfigError, IntegrityError
+from tessera.config import AuthConfig, DatabaseConfig
+from tessera.db import InMemoryDatabase, get_database
+from tessera.errors import ConfigError, IntegrityError
 
 
 class TestSaml:
@@ -145,10 +145,10 @@ class TestFactory:
             get_database(DatabaseConfig(db_type="neo4j"))
 
     def test_lazy_adapter_import_is_guarded(self) -> None:
-        # `import authy_package.db` itself must always work; adapter access
+        # `import tessera.db` itself must always work; adapter access
         # either resolves (when the adapter team's module imports cleanly)
         # or raises a helpful ImportError — never an unguarded crash.
-        import authy_package.db as db_module
+        import tessera.db as db_module
 
         for name in ("SQLDatabase", "MongoDB", "DynamoDBAdapter"):
             try:
@@ -158,7 +158,7 @@ class TestFactory:
                 assert "unavailable" in str(exc)
 
     def test_missing_attribute_raises_attribute_error(self) -> None:
-        import authy_package.db as db_module
+        import tessera.db as db_module
 
         with pytest.raises(AttributeError):
             db_module.DoesNotExist  # noqa: B018

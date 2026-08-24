@@ -12,14 +12,14 @@ from typing import Any
 
 import pytest
 
-from authy_package.cache import InMemoryCache
-from authy_package.config import AuthConfig, CacheConfig, DatabaseConfig
-from authy_package.db import InMemoryDatabase
-from authy_package.utils.security import JWTTokenManager, SecurityManager
+from tessera.cache import InMemoryCache
+from tessera.config import AuthConfig, CacheConfig, DatabaseConfig
+from tessera.db import InMemoryDatabase
+from tessera.utils.security import JWTTokenManager, SecurityManager
 
 #: Env var prefixes cleared between tests so from_env() is deterministic.
 _ENV_PREFIXES = (
-    "AUTHY_",
+    "TESSERA_",
     "MAILJET_",
     "SENDGRID_",
     "SES_",

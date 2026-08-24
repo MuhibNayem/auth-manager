@@ -1,6 +1,6 @@
 # Remediation Status — UI Kits (`ui-kits-fix` workstream)
 
-Scope: `authy_package/ui_kits/**`, `tests/ui/**`, this document.
+Scope: `tessera/ui_kits/**`, `tests/ui/**`, this document.
 Binding spec: `docs/CONTRACTS.md` (§5 admin DI/auth, §8 admin v2).
 
 ## Fixed items
@@ -19,13 +19,13 @@ Binding spec: `docs/CONTRACTS.md` (§5 admin DI/auth, §8 admin v2).
   (`tsc && vite build`) → **passes** (ES + UMD bundles emitted);
   `npm run lint` → 0 warnings; `npm test` → 8/8 pass.
   (An opt-in pytest re-run of this exists: `tests/ui/test_ui_kits_node_build.py`,
-  enabled with `AUTHY_UI_RUN_NODE=1`; skipped by default to keep pytest node-free.)
+  enabled with `TESSERA_UI_RUN_NODE=1`; skipped by default to keep pytest node-free.)
 
 ### 2. Real admin login — FIXED
 - New `src/components/Login.tsx`: POSTs JSON `{username_or_email, password}`
   to `/admin/api/v1/auth/login` via the v1 axios client (`authAPI.login`),
   maps 401/403/404/429/network errors to user-facing messages.
-- Token stored under **`authy_admin_token`** via `src/lib/auth.ts` helpers
+- Token stored under **`tessera_admin_token`** via `src/lib/auth.ts` helpers
   (single source of truth for the key; JWT `exp` decode + skew-aware
   `isTokenValid`).
 - `store/index.ts` hydrates the session synchronously from localStorage and
@@ -60,7 +60,7 @@ Binding spec: `docs/CONTRACTS.md` (§5 admin DI/auth, §8 admin v2).
 
 ### 5. `ui_kits/README.md` — REWRITTEN
 No more Svelte-5-runes or `SignUpForm`/`MFAInput` claims; documents exactly
-what exists, the real props/defaults, the `authy_admin_token` convention,
+what exists, the real props/defaults, the `tessera_admin_token` convention,
 and which endpoints are host-provided conventions.
 
 ### 6. Svelte/Vue LoginForms — FIXED (kept, per instruction)
@@ -77,7 +77,7 @@ and which endpoints are host-provided conventions.
 ### 7. `react/__init__.py` — KEPT + ALIGNED (documented choice)
 Nothing imports it (verified by grep), but it is the only React scaffold
 source for CLI/copy-paste, so deleting it would leave a gap. Rewritten:
-templates now use `authy_admin_token`, `apiBaseUrl`/`loginPath` props, and
+templates now use `tessera_admin_token`, `apiBaseUrl`/`loginPath` props, and
 module docstring clearly labels them scaffold strings, not components.
 
 ### 8. `tests/ui/` — ADDED (node-free by default)

@@ -7,8 +7,8 @@ import time
 import jwt as pyjwt
 import pytest
 
-from authy_package.errors import ConfigError, TokenError
-from authy_package.utils.security import JWTTokenManager
+from tessera.errors import ConfigError, TokenError
+from tessera.utils.security import JWTTokenManager
 
 
 
@@ -33,13 +33,13 @@ class TestIssuance:
 
     def test_issuer_and_audience_included_when_configured(self, make_config) -> None:
         config = make_config(
-            jwt_issuer="https://issuer.authy.test", jwt_audience="authy-api"
+            jwt_issuer="https://issuer.tessera.test", jwt_audience="tessera-api"
         )
         manager = JWTTokenManager(config)
         token = manager.create_access_token("user-1")
         payload = manager.validate_token(token, expected_type="access")
-        assert payload["iss"] == "https://issuer.authy.test"
-        assert payload["aud"] == "authy-api"
+        assert payload["iss"] == "https://issuer.tessera.test"
+        assert payload["aud"] == "tessera-api"
 
     def test_token_pair_contains_jtis(self, jwt_manager: JWTTokenManager) -> None:
         pair = jwt_manager.create_token_pair("user-42")

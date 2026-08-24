@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from authy_package.compliance import (
+from tessera.compliance import (
     GDPRComplianceEngine,
     SOC2AuditLogger,
     build_security_report,

@@ -7,8 +7,8 @@ from datetime import datetime, timezone
 
 import pytest
 
-from authy_package.db import InMemoryDatabase
-from authy_package.errors import IntegrityError
+from tessera.db import InMemoryDatabase
+from tessera.errors import IntegrityError
 
 
 class TestUsers:

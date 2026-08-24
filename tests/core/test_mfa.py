@@ -7,7 +7,7 @@ import hashlib
 import pyotp
 import pytest
 
-from authy_package.errors import AuthenticationError, RateLimitError
+from tessera.errors import AuthenticationError, RateLimitError
 
 EMAIL = "mfa-user@example.com"
 
@@ -101,6 +101,6 @@ async def test_login_gate_requires_and_verifies_mfa(
 
 
 def _bcrypt(password: str) -> str:
-    from authy_package.utils.security import hash_password
+    from tessera.utils.security import hash_password
 
     return hash_password(password, bcrypt_rounds=4)

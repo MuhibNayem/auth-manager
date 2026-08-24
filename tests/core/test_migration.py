@@ -7,7 +7,7 @@ import hashlib
 
 import pytest
 
-from authy_package.migration import (
+from tessera.migration import (
     Auth0Importer,
     DjangoImporter,
     FirebaseImporter,

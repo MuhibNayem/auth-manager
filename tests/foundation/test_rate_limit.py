@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from authy_package.errors import AuthenticationError, RateLimitError
-from authy_package.utils.security import (
+from tessera.errors import AuthenticationError, RateLimitError
+from tessera.utils.security import (
     LOCKOUT_KEY_TEMPLATE,
     LOGIN_RATE_LIMIT_KEY_TEMPLATE,
     clear_login_failures,

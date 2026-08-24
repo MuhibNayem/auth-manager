@@ -7,17 +7,17 @@ import time
 
 import pytest
 
-from authy_package.bot_protection import (
+from tessera.bot_protection import (
     BotProtectionError,
     BotProtectionManager,
     RateLimitExceededError,
     RiskLevel,
 )
-from authy_package.bot_protection.abstract_provider import (
+from tessera.bot_protection.abstract_provider import (
     AbstractCaptchaProvider,
     CaptchaVerificationResult,
 )
-from authy_package.cache import InMemoryCache
+from tessera.cache import InMemoryCache
 
 
 class FakeCaptchaProvider(AbstractCaptchaProvider):
@@ -190,7 +190,7 @@ async def test_should_require_captcha(cache):
 # ---------------------------------------------------------------------------
 
 def test_hcaptcha_client_is_async_method_not_property():
-    from authy_package.bot_protection.hcaptcha_provider import hCaptchaProvider
+    from tessera.bot_protection.hcaptcha_provider import hCaptchaProvider
 
     assert inspect.iscoroutinefunction(hCaptchaProvider.get_client)
     # No lingering async-property footgun.
@@ -202,13 +202,13 @@ def test_hcaptcha_client_is_async_method_not_property():
 
 
 def test_recaptcha_client_is_async_method_not_property():
-    from authy_package.bot_protection.recaptcha_provider import ReCaptchaProvider
+    from tessera.bot_protection.recaptcha_provider import ReCaptchaProvider
 
     assert inspect.iscoroutinefunction(ReCaptchaProvider.get_client)
 
 
 async def test_hcaptcha_get_client_caches():
-    from authy_package.bot_protection.hcaptcha_provider import hCaptchaProvider
+    from tessera.bot_protection.hcaptcha_provider import hCaptchaProvider
 
     provider = hCaptchaProvider(secret_key="s", site_key="k")
     try:
@@ -220,6 +220,6 @@ async def test_hcaptcha_get_client_caches():
 
 
 def test_hcaptcha_docstring_env_vars_spelled_correctly():
-    from authy_package.bot_protection import hcaptcha_provider
+    from tessera.bot_protection import hcaptcha_provider
 
     assert "HCATCHA" not in (hcaptcha_provider.__doc__ or "")

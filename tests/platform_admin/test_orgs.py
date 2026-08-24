@@ -6,7 +6,7 @@ from datetime import timedelta
 
 import pytest
 
-from authy_package.organizations.org_manager import PLAN_MAX_MEMBERS
+from tessera.organizations.org_manager import PLAN_MAX_MEMBERS
 
 
 @pytest.mark.asyncio
@@ -58,7 +58,7 @@ async def test_invitation_flow_without_email_service(orgs, db, admin_user):
     assert invitation["status"] == "pending"
 
     # Duplicate pending invitation for the same email is rejected.
-    from authy_package.errors import IntegrityError
+    from tessera.errors import IntegrityError
 
     with pytest.raises(IntegrityError):
         await orgs.send_invitation(
@@ -70,7 +70,7 @@ async def test_invitation_flow_without_email_service(orgs, db, admin_user):
     assert member["role"] == "member"
 
     # Single-use: second accept must fail.
-    from authy_package.errors import NotFoundError
+    from tessera.errors import NotFoundError
 
     with pytest.raises(NotFoundError):
         await orgs.accept_invitation(invitation["token"], invitee["id"])
@@ -85,13 +85,13 @@ async def test_expired_invitation_cannot_be_accepted(orgs, db, admin_user):
     )
     # Force expiry directly on the stored record.
     await db.delete_invitation(invitation["id"])
-    from authy_package.organizations.org_manager import InvitationStatus
+    from tessera.organizations.org_manager import InvitationStatus
 
     invitation["expires_at"] = invitation["expires_at"] - timedelta(hours=200)
     invitation["status"] = InvitationStatus.PENDING.value
     await db.create_invitation(invitation)
 
-    from authy_package.errors import NotFoundError
+    from tessera.errors import NotFoundError
 
     with pytest.raises(NotFoundError):
         await orgs.accept_invitation(invitation["token"], invitee["id"])

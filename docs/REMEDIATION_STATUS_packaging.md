@@ -8,8 +8,8 @@ Branch: `chorus/sota-auth-remediation`. Package version: **2.0.0**.
 
 **Changed:** `pyproject.toml` (root) — fully rewritten:
 
-- Project renamed `authy_package` → **`authy-package`**, version
-  `0.1.12` → **`2.0.0`** (matches `authy_package/__init__.py:__version__`;
+- Project renamed `tessera` → **`tessera`**, version
+  `0.1.12` → **`2.0.0`** (matches `tessera/__init__.py:__version__`;
   drift is now caught by the CI `version-sync` job and by
   `tests/packaging`).
 - Python constraint `^3.12` → **`>=3.9,<4.0`**.
@@ -26,7 +26,7 @@ Branch: `chorus/sota-auth-remediation`. Package version: **2.0.0**.
   httpx), `webauthn` (webauthn), `all`, `dev` (pytest, pytest-asyncio,
   pytest-cov, ruff, mypy). `all` also carries the optional
   `argon2-cffi` hashing backend required by CONTRACTS.md §2.
-- `[tool.poetry.scripts] authy = "authy_package.cli:main"` kept (entry
+- `[tool.poetry.scripts] tessera = "tessera.cli:main"` kept (entry
   point verified to exist).
 - `[tool.ruff]` (lenient baseline: E4/E7/E9/F, py39, line-length 120)
   and `[tool.mypy]` (lenient) config added per §11.
@@ -36,16 +36,16 @@ Branch: `chorus/sota-auth-remediation`. Package version: **2.0.0**.
 
 **Deleted (superseded, per §11):**
 
-- `authy_package/pyproject.toml` — the setuptools `authy-package 2.0.0`
+- `tessera/pyproject.toml` — the setuptools `tessera 2.0.0`
   file that matched marketing but was never published. Its extras design
   was folded into the root file.
-- `authy_package/requirements-enterprise.txt` — SAML/OIDC deps are now
+- `tessera/requirements-enterprise.txt` — SAML/OIDC deps are now
   the `saml` extra; OIDC needs nothing beyond core.
 
 **passlib:** removed from root `pyproject.toml` (the only packaging file
 that declared it). Remaining repo references are outside this
 workstream's ownership and tracked by theirs:
-`authy_package/utils/security.py` (foundation migrated hashing to direct
+`tessera/utils/security.py` (foundation migrated hashing to direct
 bcrypt per §2/§6) and `poetry.lock` (see known issues below).
 
 ## 2. CI/CD — `.github/workflows/`
@@ -82,16 +82,15 @@ installing `.[all,dev]` (gating), mypy lenient baseline (advisory,
   `AuthConfig.validate()` behavior, no placeholder secrets anywhere.
 - Database matrix renamed: Cassandra/Redis-as-primary-db removed;
   SQL/MongoDB/DynamoDB + InMemory (dev/test) supported.
-- Prominent RENAMING NOTE at top: "Authy" collides with Twilio's Authy
-  trademark; rename recommended before wider publication (not performed
-  here, per task scope).
+- Prominent RENAMING NOTE at top (superseded): the product was later renamed
+  from "Authy" to "Tessera", resolving the Twilio "Authy" trademark collision.
 
 ## 4. RUNBOOK.md — reconciled with the contract
 
 - Env-var table rebuilt from `AuthConfig` fields per CONTRACTS.md §2 and
   verified against the landed `config.py::from_env()` (including legacy
-  compat names: `AUTHY_TOKEN_EXPIRATION` drives `access_token_ttl_seconds`).
-- `AUTHY_DB_TYPE` options fixed to `sql | mongodb | dynamodb | memory`.
+  compat names: `TESSERA_TOKEN_EXPIRATION` drives `access_token_ttl_seconds`).
+- `TESSERA_DB_TYPE` options fixed to `sql | mongodb | dynamodb | memory`.
 - All placeholder secrets/passwords removed (incl. the `POSTGRES_PASSWORD=password`
   docker-compose sample); replaced by `secrets.token_urlsafe(...)`
   generation guidance and `${VAR:?...}` fail-fast compose interpolation.
@@ -103,17 +102,17 @@ installing `.[all,dev]` (gating), mypy lenient baseline (advisory,
 
 ## 5. Status reports — contradictions removed
 
-- `AUTHY_ADMIN_DASHBOARD_REPORT.md`: rewritten as a status document;
+- `TESSERA_ADMIN_DASHBOARD_REPORT.md`: rewritten as a status document;
   previously-mocked "AI" surfaces marked replaced by rule-based
   heuristics (per §8); unverified Lighthouse/latency/bundle metrics
   removed; the Phase 2–4 TODO list (which contradicted the phases
   report) removed.
-- `AUTHY_ENTERPRISE_PHASES_REPORT.md`: rewritten; Phases 2–3 delivered
+- `TESSERA_ENTERPRISE_PHASES_REPORT.md`: rewritten; Phases 2–3 delivered
   via real db-contract implementations, Phase 4 delivered as documented
   heuristics; mocked NLQ/predictive-analytics/WebSocket-alert claims
   marked **not delivered**; line-count and "Production Ready" claims
   removed. The two reports no longer contradict each other.
-- `AUTHY_RBAC_IMPLEMENTATION_REPORT.md`: rewritten; unverifiable
+- `TESSERA_RBAC_IMPLEMENTATION_REPORT.md`: rewritten; unverifiable
   latency/throughput/cache-hit figures and vendor comparison table
   removed; persistence mapped to §4 db contract; "unit tests TODO"
   resolved by the remediation suite (§0 rule 10, §12).
@@ -124,7 +123,7 @@ installing `.[all,dev]` (gating), mypy lenient baseline (advisory,
   status pointer to CONTRACTS.md added.
 - `AWS_SECURITY_GUIDE.md`: kept as-is (verified: no local cross-
   references needed fixing).
-- `authy_package/README.md`: aligned with root README (2.0 context,
+- `tessera/README.md`: aligned with root README (2.0 context,
   extras install lines for `[saml]`/`[oidc]`, rename-note pointer);
   technical SAML/OIDC content retained and verified against real
   `SAMLManager/OIDCManager` exports and the shipped
@@ -138,7 +137,7 @@ keys. Functional verification against services happens later in the
 integration workstream.
 
 - `example_memory_quickstart.py` **(new)** — written against the
-  intended public API (`authy_package.core.auth_manager`):
+  intended public API (`tessera.core.auth_manager`):
   register/login/refresh/logout on `InMemoryDatabase` + `InMemoryCache`,
   demonstrating §6 semantics including refresh-token rotation replay
   rejection. Runs with zero external services; the login/refresh/logout
@@ -162,8 +161,8 @@ integration workstream.
 `tests/packaging/test_packaging_metadata.py` (stdlib `tomllib` + PyYAML,
 no package import):
 
-- name `authy-package`, version `2.0.0`, version sync with
-  `authy_package/__init__.py`, python `>=3.9,<4.0`, poetry-core backend;
+- name `tessera`, version `2.0.0`, version sync with
+  `tessera/__init__.py`, python `>=3.9,<4.0`, poetry-core backend;
 - inner `pyproject.toml` / `requirements-enterprise.txt` stay deleted;
 - core deps present; all 13 extras present with contract contents;
   `dev` contains pytest/pytest-asyncio/pytest-cov/ruff/mypy; `all`
@@ -194,7 +193,7 @@ no package import):
    dependency set (incl. passlib). CI no longer uses it (pip+build), but
    whoever owns dependency management should `poetry lock` (or delete it)
    after this change lands. Not deleted here: outside owned paths.
-2. **pending-core-migration** — `authy_package/core/auth_manager.py`
+2. **pending-core-migration** — `tessera/core/auth_manager.py`
    is still the legacy implementation, intentionally owned by the
    Wave-2 core-auth-fix team and untouched here: it calls the removed
    legacy cache API `cache.create_token_pair(...)` (line 79), which
@@ -206,8 +205,8 @@ no package import):
    per the foundation-landed §6 signature.
 3. `examples/*` functional runs (real Postgres/Mongo/Redis/Cognito/OAuth)
    are scheduled with the integration team per the delegation note.
-4. Product rename (Twilio Authy trademark) is recommended but
-   intentionally NOT performed (docs-only mandate).
+4. Product rename (from "Authy", Twilio trademark) was performed subsequently:
+   the framework is now "Tessera".
 
 ---
 

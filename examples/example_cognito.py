@@ -1,7 +1,7 @@
 """AWS Cognito flows: register, login, refresh, social, MFA, attributes.
 
-Requires an AWS Cognito user pool and the `authy-package[dynamodb]` or
-`authy-package[sms]` extra for boto3 (any extra that provides boto3, or
+Requires an AWS Cognito user pool and the `tessera[dynamodb]` or
+`tessera[sms]` extra for boto3 (any extra that provides boto3, or
 `pip install boto3`). AWS credentials come from the standard provider
 chain — prefer IAM roles/SSO; never hardcode keys
 (see AWS_SECURITY_GUIDE.md).
@@ -12,13 +12,13 @@ Environment variables:
     COGNITO_USER_POOL_ID    e.g. us-east-1_xxxxxxxxx
     COGNITO_APP_CLIENT_ID   app client id
     COGNITO_REDIRECT_URI    e.g. https://app.example.com/callback
-    AUTHY_COGNITO_USERNAME  demo username (default: johndoe)
-    AUTHY_COGNITO_EMAIL     demo email   (default: john@example.com)
+    TESSERA_COGNITO_USERNAME  demo username (default: johndoe)
+    TESSERA_COGNITO_EMAIL     demo email   (default: john@example.com)
 
 Interactive values (confirmation codes, MFA codes) are read from env
 vars so the script contains no fake placeholder flow:
 
-    AUTHY_COGNITO_CONFIRMATION_CODE / AUTHY_COGNITO_MFA_CODE
+    TESSERA_COGNITO_CONFIRMATION_CODE / TESSERA_COGNITO_MFA_CODE
 
 Token payloads use lowercase keys consistently:
     {"access_token": ..., "refresh_token": ..., "id_token": ...}
@@ -27,16 +27,16 @@ Token payloads use lowercase keys consistently:
 import asyncio
 import os
 
-from authy_package.cognito.cognito_manager import CognitoManager
-from authy_package.core.auth_manager import CognitoAuthManager
+from tessera.cognito.cognito_manager import CognitoManager
+from tessera.core.auth_manager import CognitoAuthManager
 
 REGION = os.environ["AWS_REGION"]
 USER_POOL_ID = os.environ["COGNITO_USER_POOL_ID"]
 APP_CLIENT_ID = os.environ["COGNITO_APP_CLIENT_ID"]
 REDIRECT_URI = os.environ.get("COGNITO_REDIRECT_URI", "https://app.example.com/callback")
 
-USERNAME = os.environ.get("AUTHY_COGNITO_USERNAME", "johndoe")
-EMAIL = os.environ.get("AUTHY_COGNITO_EMAIL", "john@example.com")
+USERNAME = os.environ.get("TESSERA_COGNITO_USERNAME", "johndoe")
+EMAIL = os.environ.get("TESSERA_COGNITO_EMAIL", "john@example.com")
 
 
 async def main() -> None:
@@ -62,7 +62,7 @@ async def main() -> None:
         print("Cognito registration error:", exc)
 
     # 2. Confirm the account if a code was provided (from the email/SMS).
-    confirmation_code = os.environ.get("AUTHY_COGNITO_CONFIRMATION_CODE")
+    confirmation_code = os.environ.get("TESSERA_COGNITO_CONFIRMATION_CODE")
     if confirmation_code:
         try:
             await auth_manager.confirm_user_account(
@@ -72,7 +72,7 @@ async def main() -> None:
         except Exception as exc:
             print("Account confirmation error:", exc)
     else:
-        print("[skip] account confirmation (set AUTHY_COGNITO_CONFIRMATION_CODE)")
+        print("[skip] account confirmation (set TESSERA_COGNITO_CONFIRMATION_CODE)")
 
     # 3. Login -> {"access_token", "refresh_token", ...}.
     login_response = None
@@ -107,7 +107,7 @@ async def main() -> None:
         )
         print("Social login URL:", social_url)
         # After the browser callback, exchange the code:
-        code = os.environ.get("AUTHY_COGNITO_SOCIAL_CODE")
+        code = os.environ.get("TESSERA_COGNITO_SOCIAL_CODE")
         if code:
             tokens = await auth_manager.exchange_code_for_tokens(
                 code=code, redirect_uri=REDIRECT_URI
@@ -134,12 +134,12 @@ async def main() -> None:
         print("TOTP association:", sorted(totp_setup.keys()) if isinstance(totp_setup, dict) else totp_setup)
         await auth_manager.enable_TOTP_mfa(username=USERNAME)
         print("TOTP MFA enabled")
-        mfa_code = os.environ.get("AUTHY_COGNITO_MFA_CODE")
+        mfa_code = os.environ.get("TESSERA_COGNITO_MFA_CODE")
         if mfa_code:
             verify = await auth_manager.verify_mfa(access_token=access_token, code=mfa_code)
             print("MFA verified:", verify)
         else:
-            print("[skip] MFA verification (set AUTHY_COGNITO_MFA_CODE)")
+            print("[skip] MFA verification (set TESSERA_COGNITO_MFA_CODE)")
     except Exception as exc:
         print("MFA error:", exc)
 
@@ -147,7 +147,7 @@ async def main() -> None:
     try:
         await auth_manager.reset_password(username=USERNAME)
         print("Password reset initiated")
-        reset_code = os.environ.get("AUTHY_COGNITO_RESET_CODE")
+        reset_code = os.environ.get("TESSERA_COGNITO_RESET_CODE")
         if reset_code:
             await auth_manager.confirm_password(
                 username=USERNAME,

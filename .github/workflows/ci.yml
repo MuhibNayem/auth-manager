@@ -21,7 +21,7 @@ permissions:
 
 jobs:
   version-sync:
-    name: Version sync (pyproject == authy_package.__version__)
+    name: Version sync (pyproject == tessera.__version__)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -41,13 +41,13 @@ jobs:
 
           meta = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
           pyproject_version = meta["tool"]["poetry"]["version"]
-          init_text = Path("authy_package/__init__.py").read_text(encoding="utf-8")
+          init_text = Path("tessera/__init__.py").read_text(encoding="utf-8")
           match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', init_text)
-          assert match, "authy_package/__init__.py:__version__ not found"
+          assert match, "tessera/__init__.py:__version__ not found"
           init_version = match.group(1)
           assert pyproject_version == init_version, (
               f"version mismatch: pyproject.toml={pyproject_version!r} "
-              f"authy_package/__init__.py={init_version!r}"
+              f"tessera/__init__.py={init_version!r}"
           )
           print(f"versions in sync: {pyproject_version}")
           PY
@@ -70,7 +70,7 @@ jobs:
           pip install ".[dev]"
 
       - name: Ruff
-        run: ruff check authy_package tests examples
+        run: ruff check tessera tests examples
 
   mypy:
     name: Mypy (lenient baseline, advisory)
@@ -91,7 +91,7 @@ jobs:
           pip install ".[dev]"
 
       - name: Mypy
-        run: mypy authy_package
+        run: mypy tessera
 
   test:
     name: pytest (py${{ matrix.python-version }})

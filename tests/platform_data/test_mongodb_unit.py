@@ -13,8 +13,8 @@ from typing import Any, Dict, List, Optional
 
 import pytest
 
-from authy_package.config import DatabaseConfig
-from authy_package.db.mongodb import (
+from tessera.config import DatabaseConfig
+from tessera.db.mongodb import (
     MEMBER_UPDATABLE_FIELDS,
     ORG_UPDATABLE_FIELDS,
     USER_UPDATABLE_FIELDS,
@@ -196,7 +196,7 @@ def mongo() -> MongoDB:
         DatabaseConfig(
             db_type="mongodb",
             connection_string="mongodb://fake:27017",
-            db_name="authy_test",
+            db_name="tessera_test",
         )
     )
     database._db = FakeDB()

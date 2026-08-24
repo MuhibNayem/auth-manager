@@ -70,7 +70,7 @@ async def test_lockout_after_n_failures_blocks_even_correct_password(client, adm
 
 @pytest.mark.asyncio
 async def test_non_admin_user_cannot_login_to_admin_api(client, db, config):
-    from authy_package.utils.security import hash_password
+    from tessera.utils.security import hash_password
 
     await db.create_user(
         {

@@ -3,14 +3,14 @@
 Decision (documented in ui_kits README + remediation status): the file is
 KEPT — it is the only React scaffold source for CLI/copy-paste use — but its
 token key and endpoint handling are aligned with the admin dashboard:
-- token persisted under localStorage key `authy_admin_token`
+- token persisted under localStorage key `tessera_admin_token`
 - endpoints configurable via apiBaseUrl + loginPath props.
 """
 
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-MODULE = REPO_ROOT / "authy_package" / "ui_kits" / "react" / "__init__.py"
+MODULE = REPO_ROOT / "tessera" / "ui_kits" / "react" / "__init__.py"
 
 
 def read_module() -> str:
@@ -23,12 +23,12 @@ def test_module_exists_and_parses():
     namespace: dict = {}
     exec(code, namespace)  # noqa: S102 - our own file, deliberate in test
     assert "REACT_COMPONENTS" in namespace
-    assert namespace.get("ADMIN_TOKEN_KEY") == "authy_admin_token"
+    assert namespace.get("ADMIN_TOKEN_KEY") == "tessera_admin_token"
 
 
 def test_templates_use_dashboard_token_key():
     text = read_module()
-    assert "authy_admin_token" in text
+    assert "tessera_admin_token" in text
     # the old divergent key must be gone entirely
     assert "'access_token'" not in text and '"access_token"' not in text
 

@@ -4,7 +4,7 @@ Runs end-to-end on the built-in in-memory fakes (CONTRACTS.md §4
 ``InMemoryDatabase``, §3 ``InMemoryCache``) — no database, Redis, or
 network access required. Useful as a smoke test of an installation:
 
-    pip install "authy-package"
+    pip install "tessera"
     python examples/example_memory_quickstart.py
 
 Token semantics demonstrated (CONTRACTS.md §6):
@@ -14,11 +14,11 @@ Token semantics demonstrated (CONTRACTS.md §6):
 - logout revokes the session behind the access token.
 
 The JWT secret below is generated per-process for the demo. Real
-deployments must set ``AUTHY_JWT_SECRET`` explicitly (§2: validate()
+deployments must set ``TESSERA_JWT_SECRET`` explicitly (§2: validate()
 rejects empty/placeholder secrets, and production refuses placeholders).
 
 Verified end-to-end against the 2.0 remediated core auth manager
-(``authy_package.core.auth_manager`` on CONTRACTS.md §3/§6).
+(``tessera.core.auth_manager`` on CONTRACTS.md §3/§6).
 """
 
 import asyncio
@@ -34,17 +34,17 @@ if str(_REPO_ROOT) not in sys.path:
 
 # --- Environment configuration (read by AuthConfig.from_env) --------------
 # Generate a strong per-run secret for this demo when none is provided.
-os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-os.environ.setdefault("AUTHY_ENV", "development")
-os.environ.setdefault("AUTHY_DB_TYPE", "memory")
+os.environ.setdefault("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+os.environ.setdefault("TESSERA_ENV", "development")
+os.environ.setdefault("TESSERA_DB_TYPE", "memory")
 
-from authy_package.config import AuthConfig                          # noqa: E402
-from authy_package.core.auth_manager import TraditionalAuthManager  # noqa: E402
-from authy_package.cache.memory_cache import InMemoryCache          # noqa: E402
-from authy_package.db.memory import InMemoryDatabase                # noqa: E402
-from authy_package.errors import AuthyError                         # noqa: E402
-from authy_package.mfa.mfa_setup import MFAAuthManager              # noqa: E402
-from authy_package.utils.security import SecurityManager            # noqa: E402
+from tessera.config import AuthConfig                          # noqa: E402
+from tessera.core.auth_manager import TraditionalAuthManager  # noqa: E402
+from tessera.cache.memory_cache import InMemoryCache          # noqa: E402
+from tessera.db.memory import InMemoryDatabase                # noqa: E402
+from tessera.errors import TesseraError                         # noqa: E402
+from tessera.mfa.mfa_setup import MFAAuthManager              # noqa: E402
+from tessera.utils.security import SecurityManager            # noqa: E402
 
 # A strong throwaway password for the demo account (never hardcode one).
 DEMO_PASSWORD = secrets.token_urlsafe(16)
@@ -95,7 +95,7 @@ async def main() -> None:
         # 6. Replaying the OLD refresh token must fail (CONTRACTS.md §3.1).
         try:
             await auth.refresh_token(refresh_token=tokens["refresh_token"])
-        except AuthyError as exc:
+        except TesseraError as exc:
             print(f"[refresh-replay] correctly rejected: {exc}")
         else:
             raise AssertionError("old refresh token was accepted after rotation")

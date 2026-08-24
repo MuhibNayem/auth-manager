@@ -1,0 +1,68 @@
+{
+  "name": "@tessera/admin-dashboard",
+  "version": "1.0.0",
+  "description": "Enterprise-grade Admin Dashboard UI Kit for Tessera Package",
+  "private": false,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview",
+    "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
+    "test": "vitest run",
+    "test:ui": "vitest ui"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.26.0",
+    "@tanstack/react-query": "^5.51.0",
+    "@tanstack/react-table": "^8.19.0",
+    "axios": "^1.7.2",
+    "date-fns": "^3.6.0",
+    "recharts": "^2.12.7",
+    "framer-motion": "^11.3.0",
+    "lucide-react": "^0.414.0",
+    "zustand": "^4.5.4",
+    "react-hot-toast": "^2.4.1",
+    "clsx": "^2.1.1",
+    "tailwind-merge": "^2.4.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@typescript-eslint/eslint-plugin": "^7.15.0",
+    "@typescript-eslint/parser": "^7.15.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.2",
+    "eslint-plugin-react-refresh": "^0.4.7",
+    "typescript": "^5.5.4",
+    "vite": "^5.3.4",
+    "vitest": "^2.0.4",
+    "@vitest/ui": "^2.0.4",
+    "tailwindcss": "^3.4.6",
+    "postcss": "^8.4.39",
+    "autoprefixer": "^10.4.19"
+  },
+  "peerDependencies": {
+    "react": ">=18.0.0",
+    "react-dom": ">=18.0.0"
+  },
+  "keywords": [
+    "admin",
+    "dashboard",
+    "authentication",
+    "tessera",
+    "react",
+    "typescript",
+    "enterprise"
+  ],
+  "author": "Tessera Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/MuhibNayem/auth-manager.git",
+    "directory": "tessera/ui_kits/react/admin-dashboard"
+  }
+}

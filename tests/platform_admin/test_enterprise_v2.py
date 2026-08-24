@@ -6,7 +6,7 @@ from datetime import timedelta, timezone, datetime
 
 import pytest
 
-from authy_package.admin.audit_logger import EventType
+from tessera.admin.audit_logger import EventType
 
 
 @pytest.mark.asyncio
@@ -19,7 +19,7 @@ async def test_api_key_create_once_validate_revoke(client, admin_headers):
     assert created.status_code == 201, created.text
     body = created.json()
     api_key = body["api_key"]
-    assert api_key.startswith("authy_ak_")
+    assert api_key.startswith("tessera_ak_")
     key_id = body["id"]
 
     # Plaintext is never listed again; hashes never exposed.

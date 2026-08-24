@@ -2,16 +2,16 @@
 
 Requires a running MongoDB and Redis, plus extras:
 
-    pip install "authy-package[mongodb]"
+    pip install "tessera[mongodb]"
 
 Environment variables (no secrets are hardcoded):
 
-    AUTHY_JWT_SECRET      JWT signing secret (generate: python -c \\
+    TESSERA_JWT_SECRET      JWT signing secret (generate: python -c \\
                           "import secrets; print(secrets.token_urlsafe(48))")
-    AUTHY_DB_URL          e.g. mongodb://localhost:27017
-    AUTHY_DB_NAME         MongoDB database name, e.g. authy_db
-    AUTHY_REDIS_URL       e.g. redis://localhost:6379
-    AUTHY_EMAIL_ENABLED   optional; "true" to exercise the password-reset email
+    TESSERA_DB_URL          e.g. mongodb://localhost:27017
+    TESSERA_DB_NAME         MongoDB database name, e.g. tessera_db
+    TESSERA_REDIS_URL       e.g. redis://localhost:6379
+    TESSERA_EMAIL_ENABLED   optional; "true" to exercise the password-reset email
 
 The demo password is generated per run; real applications collect
 passwords from users over a secure channel. The MongoDB adapter creates
@@ -28,19 +28,19 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-os.environ.setdefault("AUTHY_ENV", "development")
-os.environ.setdefault("AUTHY_DB_TYPE", "mongodb")
+os.environ.setdefault("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+os.environ.setdefault("TESSERA_ENV", "development")
+os.environ.setdefault("TESSERA_DB_TYPE", "mongodb")
 
-from authy_package.cache.redis_cache import RedisCache     # noqa: E402
-from authy_package.config import AuthConfig                # noqa: E402
-from authy_package.core.auth_manager import (              # noqa: E402
+from tessera.cache.redis_cache import RedisCache     # noqa: E402
+from tessera.config import AuthConfig                # noqa: E402
+from tessera.core.auth_manager import (              # noqa: E402
     TraditionalAuthManager,
 )
-from authy_package.db.mongodb import MongoDB               # noqa: E402
-from authy_package.errors import AuthyError                # noqa: E402
-from authy_package.mfa.mfa_setup import MFAAuthManager     # noqa: E402
-from authy_package.utils.security import SecurityManager   # noqa: E402
+from tessera.db.mongodb import MongoDB               # noqa: E402
+from tessera.errors import TesseraError                # noqa: E402
+from tessera.mfa.mfa_setup import MFAAuthManager     # noqa: E402
+from tessera.utils.security import SecurityManager   # noqa: E402
 
 DEMO_PASSWORD = secrets.token_urlsafe(16)
 DEMO_USERNAME = "janedoe"
@@ -53,11 +53,11 @@ async def main() -> None:
 
     db = MongoDB(
         {
-            "url": os.environ["AUTHY_DB_URL"],
-            "db_name": os.environ.get("AUTHY_DB_NAME", "authy_db"),
+            "url": os.environ["TESSERA_DB_URL"],
+            "db_name": os.environ.get("TESSERA_DB_NAME", "tessera_db"),
         }
     )
-    cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
+    cache = RedisCache(os.environ.get("TESSERA_REDIS_URL", "redis://localhost:6379"))
     await db.connect()
 
     try:
@@ -77,7 +77,7 @@ async def main() -> None:
                 username=DEMO_USERNAME, email=DEMO_EMAIL, password=DEMO_PASSWORD
             )
             print("MongoDB registration:", response.get("message", response))
-        except AuthyError as exc:
+        except TesseraError as exc:
             print("MongoDB registration error:", exc)
 
         # 2. Login -> {"access_token", "refresh_token"}.
@@ -110,11 +110,11 @@ async def main() -> None:
             print("pyotp not installed; skipping MFA confirmation")
 
         # 6. Password reset (only when an email provider is configured).
-        if os.environ.get("AUTHY_EMAIL_ENABLED", "").lower() == "true":
+        if os.environ.get("TESSERA_EMAIL_ENABLED", "").lower() == "true":
             await auth.request_password_reset(email=DEMO_EMAIL)
             print("Password reset email requested (token delivered by email only)")
         else:
-            print("Skipping password reset (set AUTHY_EMAIL_ENABLED=true to try it)")
+            print("Skipping password reset (set TESSERA_EMAIL_ENABLED=true to try it)")
     finally:
         await cache.close()
         await db.close()

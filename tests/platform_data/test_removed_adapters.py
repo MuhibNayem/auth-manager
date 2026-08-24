@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from authy_package.config import DatabaseConfig
-from authy_package.db import get_database
-from authy_package.errors import ConfigError
+from tessera.config import DatabaseConfig
+from tessera.db import get_database
+from tessera.errors import ConfigError
 
-_DB_DIR = Path(__file__).resolve().parents[2] / "authy_package" / "db"
+_DB_DIR = Path(__file__).resolve().parents[2] / "tessera" / "db"
 
 
 class TestRemovedAdapters:
@@ -25,9 +25,9 @@ class TestRemovedAdapters:
 
     def test_adapter_modules_not_importable(self) -> None:
         with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("authy_package.db.redis_adapter")
+            importlib.import_module("tessera.db.redis_adapter")
         with pytest.raises(ModuleNotFoundError):
-            importlib.import_module("authy_package.db.cassandra_adapter")
+            importlib.import_module("tessera.db.cassandra_adapter")
 
     @pytest.mark.parametrize("db_type", ["redis", "cassandra"])
     def test_factory_rejects_removed_db_types(self, db_type: str) -> None:
@@ -38,7 +38,7 @@ class TestRemovedAdapters:
         # memory constructs immediately; sql/mongodb/dynamodb resolve lazily.
         database = get_database(DatabaseConfig(db_type="memory"))
         assert database.__class__.__name__ == "InMemoryDatabase"
-        import authy_package.db as db_module
+        import tessera.db as db_module
 
         for name in ("SQLDatabase", "MongoDB", "DynamoDBAdapter"):
             assert isinstance(getattr(db_module, name), type)

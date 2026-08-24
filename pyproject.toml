@@ -1,23 +1,23 @@
 # Single source of truth for packaging metadata (docs/CONTRACTS.md §11).
 #
-# - Distribution name: authy-package (PyPI), import name: authy_package
-# - Version MUST stay in sync with authy_package/__init__.py:__version__
+# - Distribution name: tessera (PyPI), import name: tessera
+# - Version MUST stay in sync with tessera/__init__.py:__version__
 #   (enforced by the "version-sync" job in .github/workflows/ci.yml).
-# - The legacy authy_package/pyproject.toml (setuptools) and
-#   authy_package/requirements-enterprise.txt were deleted; they are
+# - The legacy tessera/pyproject.toml (setuptools) and
+#   tessera/requirements-enterprise.txt were deleted; they are
 #   superseded by this file. See docs/REMEDIATION_STATUS_packaging.md.
 # - CI builds/publishes with plain pip + PEP 517 (poetry-core backend);
 #   Poetry itself is not required to build or publish.
 
 [tool.poetry]
-name = "authy-package"
+name = "tessera"
 version = "2.0.0"
 description = "Enterprise-grade authentication platform for Python: traditional auth, MFA, passwordless, sessions, organizations, RBAC, audit logging, webhooks, SAML/OIDC SSO, and framework adapters for FastAPI, Flask, and Django."
 authors = ["A K M Muhibullah Nayem <nayem.drmc@gmail.com>"]
 license = "MIT"
 readme = "README.md"
 repository = "https://github.com/MuhibNayem/auth-manager"
-packages = [{ include = "authy_package" }]
+packages = [{ include = "tessera" }]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
@@ -39,7 +39,7 @@ classifiers = [
 "Bug Tracker" = "https://github.com/MuhibNayem/auth-manager/issues"
 
 [tool.poetry.scripts]
-authy = "authy_package.cli:main"
+tessera = "tessera.cli:main"
 
 [tool.poetry.dependencies]
 python = ">=3.9,<4.0"
@@ -130,7 +130,7 @@ build-backend = "poetry.core.masonry.api"
 [tool.ruff]
 target-version = "py39"
 line-length = 120
-extend-exclude = ["authy_package/ui_kits"]
+extend-exclude = ["tessera/ui_kits"]
 
 [tool.ruff.lint]
 # Lenient baseline: import/syntax-level pyflakes + critical pycodestyle only.

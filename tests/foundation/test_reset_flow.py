@@ -8,9 +8,9 @@ from typing import Any, Dict, List
 
 import pytest
 
-from authy_package.errors import AuthenticationError
-from authy_package.utils import security
-from authy_package.utils.security import (
+from tessera.errors import AuthenticationError
+from tessera.utils import security
+from tessera.utils.security import (
     RESET_TOKEN_CACHE_PREFIX,
     SecurityManager,
     generate_reset_token,
@@ -82,7 +82,7 @@ class TestResetRequest:
         token_hash = hashlib.sha256(token.encode()).hexdigest()
         key = RESET_TOKEN_CACHE_PREFIX + token_hash
         raw = await cache.get(key)
-        assert raw is not None, "token must be stored under authy:reset:{sha256(token)}"
+        assert raw is not None, "token must be stored under tessera:reset:{sha256(token)}"
         record = json.loads(raw)
         assert record["user_id"] == user["id"]
         assert record["token_hash"] == token_hash
@@ -149,7 +149,7 @@ class TestResetConsumption:
             return {"sent": False, "reason": "fake"}
 
         security_manager._email.send = _noop_send  # type: ignore[method-assign]
-        import authy_package.utils.security as sec
+        import tessera.utils.security as sec
 
         old = sec.generate_reset_token
         sec.generate_reset_token = wrapper
@@ -192,7 +192,7 @@ class TestResetConsumption:
 
 class TestResetPassword:
     async def _issue(self, security_manager: SecurityManager) -> str:
-        import authy_package.utils.security as sec
+        import tessera.utils.security as sec
 
         seen: List[str] = []
         original = sec.generate_reset_token

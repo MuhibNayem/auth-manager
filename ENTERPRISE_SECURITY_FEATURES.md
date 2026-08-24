@@ -1,6 +1,6 @@
 # Enterprise Security Features Guide
 
-This guide covers the three major enterprise security features added to Authy Package:
+This guide covers the three major enterprise security features added to Tessera Package:
 1. **Phone/SMS Authentication** - Vendor-agnostic SMS verification
 2. **Bot Protection** - CAPTCHA and behavioral analysis
 3. **Breached Password Detection** - Have I Been Pwned integration
@@ -29,7 +29,7 @@ Enterprise-grade SMS verification with support for multiple providers (Twilio, A
 
 **Step 1: Install dependency**
 ```bash
-pip install "authy-package[sms]"   # twilio + boto3
+pip install "tessera[sms]"   # twilio + boto3
 ```
 
 **Step 2: Configure environment variables**
@@ -37,13 +37,13 @@ pip install "authy-package[sms]"   # twilio + boto3
 export TWILIO_ACCOUNT_SID=ACxxxxxxxxxxxxx
 export TWILIO_AUTH_TOKEN=your_auth_token
 export TWILIO_FROM_NUMBER=+1234567890
-export AUTHY_SMS_ENABLED=true
-export AUTHY_SMS_PROVIDER=twilio
+export TESSERA_SMS_ENABLED=true
+export TESSERA_SMS_PROVIDER=twilio
 ```
 
 **Step 3: Initialize in your application**
 ```python
-from authy_package.sms import SMSManager, TwilioProvider
+from tessera.sms import SMSManager, TwilioProvider
 
 # Initialize provider (auto-loads from env vars)
 provider = TwilioProvider.from_env()
@@ -77,14 +77,14 @@ except TooManyAttemptsError as e:
 
 **Step 1: Install dependency**
 ```bash
-pip install "authy-package[sms]"   # twilio + boto3
+pip install "tessera[sms]"   # twilio + boto3
 ```
 
 **Step 2: Configure environment and credentials**
 ```bash
 export AWS_REGION=us-east-1
-export AUTHY_SMS_ENABLED=true
-export AUTHY_SMS_PROVIDER=aws_sns
+export TESSERA_SMS_ENABLED=true
+export TESSERA_SMS_PROVIDER=aws_sns
 ```
 
 Credentials must come from the standard AWS credential provider chain —
@@ -94,7 +94,7 @@ credentials file. **Never export static access keys**; see
 
 **Step 3: Initialize**
 ```python
-from authy_package.sms import SMSManager, AWSSNSProvider
+from tessera.sms import SMSManager, AWSSNSProvider
 
 provider = AWSSNSProvider.from_env()
 sms_manager = SMSManager(provider=provider, cache=redis_cache_instance)
@@ -103,7 +103,7 @@ sms_manager = SMSManager(provider=provider, cache=redis_cache_instance)
 ### Advanced Configuration
 
 ```python
-from authy_package.config import AuthConfig, SMSConfig
+from tessera.config import AuthConfig, SMSConfig
 
 config = AuthConfig(
     sms=SMSConfig(
@@ -141,8 +141,8 @@ await sms_manager.send_verification_code(
 ### Integration with Auth Flow
 
 ```python
-from authy_package.core.auth_manager import TraditionalAuthManager
-from authy_package.sms import SMSManager, TwilioProvider
+from tessera.core.auth_manager import TraditionalAuthManager
+from tessera.sms import SMSManager, TwilioProvider
 
 # Setup
 provider = TwilioProvider.from_env()
@@ -181,7 +181,7 @@ async def verify_phone(phone, code):
 To add a new SMS provider (e.g., Vonage):
 
 ```python
-# authy_package/sms/vonage_provider.py
+# tessera/sms/vonage_provider.py
 from .abstract_provider import AbstractSMSProvider, SMSResponse
 
 class VonageProvider(AbstractSMSProvider):
@@ -222,13 +222,13 @@ Multi-layered bot protection with CAPTCHA verification, rate limiting, and behav
 ```bash
 export HCAPTCHA_SITE_KEY=your_site_key
 export HCAPTCHA_SECRET_KEY=your_secret_key
-export AUTHY_BOT_PROTECTION_ENABLED=true
-export AUTHY_CAPTCHA_PROVIDER=hcaptcha
+export TESSERA_BOT_PROTECTION_ENABLED=true
+export TESSERA_CAPTCHA_PROVIDER=hcaptcha
 ```
 
 **Step 3: Initialize**
 ```python
-from authy_package.bot_protection import BotProtectionManager, hCaptchaProvider
+from tessera.bot_protection import BotProtectionManager, hCaptchaProvider
 
 # Initialize provider
 provider = hCaptchaProvider.from_env()
@@ -257,12 +257,12 @@ export RECAPTCHA_SITE_KEY=your_site_key
 export RECAPTCHA_SECRET_KEY=your_secret_key
 export RECAPTCHA_VERSION=v3
 export RECAPTCHA_MIN_SCORE=0.5
-export AUTHY_CAPTCHA_PROVIDER=recaptcha
+export TESSERA_CAPTCHA_PROVIDER=recaptcha
 ```
 
 **Step 3: Initialize**
 ```python
-from authy_package.bot_protection import BotProtectionManager, ReCaptchaProvider
+from tessera.bot_protection import BotProtectionManager, ReCaptchaProvider
 
 provider = ReCaptchaProvider.from_env()
 bot_manager = BotProtectionManager(provider=provider, cache=cache)
@@ -335,7 +335,7 @@ function LoginForm() {
 ### Backend Verification
 
 ```python
-from authy_package.bot_protection import (
+from tessera.bot_protection import (
     BotProtectionManager, 
     hCaptchaProvider,
     RateLimitExceededError,
@@ -381,7 +381,7 @@ async def login(request: LoginRequest):
 ### Advanced Configuration
 
 ```python
-from authy_package.config import AuthConfig, BotProtectionConfig
+from tessera.config import AuthConfig, BotProtectionConfig
 
 config = AuthConfig(
     bot_protection=BotProtectionConfig(
@@ -440,13 +440,13 @@ Check passwords against the Have I Been Pwned database using k-anonymity (privac
 **Step 2: Configure environment variables**
 ```bash
 export HIBP_API_KEY=your_api_key
-export AUTHY_CHECK_BREACHED_PASSWORDS=true
-export AUTHY_PASSWORD_MIN_LENGTH=12
+export TESSERA_CHECK_BREACHED_PASSWORDS=true
+export TESSERA_PASSWORD_MIN_LENGTH=12
 ```
 
 **Step 3: Initialize**
 ```python
-from authy_package.password_security import (
+from tessera.password_security import (
     PasswordSecurityManager,
     HibpProvider,
     PasswordPolicy
@@ -503,8 +503,8 @@ print(f"Suggestions: {result.suggestions}")
 ### Integration with Registration
 
 ```python
-from authy_package.core.auth_manager import TraditionalAuthManager
-from authy_package.password_security import PasswordSecurityManager, HibpProvider
+from tessera.core.auth_manager import TraditionalAuthManager
+from tessera.password_security import PasswordSecurityManager, HibpProvider
 
 # Setup
 hibp = HibpProvider.from_env()
@@ -614,11 +614,11 @@ This implementation uses **k-anonymity**:
 
 ```python
 from fastapi import FastAPI, HTTPException
-from authy_package.config import AuthConfig
-from authy_package.sms import SMSManager, TwilioProvider
-from authy_package.bot_protection import BotProtectionManager, hCaptchaProvider
-from authy_package.password_security import PasswordSecurityManager, HibpProvider
-from authy_package.core.auth_manager import TraditionalAuthManager
+from tessera.config import AuthConfig
+from tessera.sms import SMSManager, TwilioProvider
+from tessera.bot_protection import BotProtectionManager, hCaptchaProvider
+from tessera.password_security import PasswordSecurityManager, HibpProvider
+from tessera.core.auth_manager import TraditionalAuthManager
 
 app = FastAPI()
 
@@ -720,8 +720,8 @@ async def verify_phone(request: VerifyPhoneRequest):
 
 ### SMS
 ```bash
-AUTHY_SMS_ENABLED=true
-AUTHY_SMS_PROVIDER=twilio  # or aws_sns
+TESSERA_SMS_ENABLED=true
+TESSERA_SMS_PROVIDER=twilio  # or aws_sns
 
 # Twilio
 TWILIO_ACCOUNT_SID=AC...
@@ -734,15 +734,15 @@ AWS_REGION=us-east-1
 AWS_SNS_SENDER_ID=MyApp
 
 # Code settings
-AUTHY_SMS_CODE_LENGTH=6
-AUTHY_SMS_CODE_EXPIRATION=300
-AUTHY_SMS_MAX_ATTEMPTS=3
+TESSERA_SMS_CODE_LENGTH=6
+TESSERA_SMS_CODE_EXPIRATION=300
+TESSERA_SMS_MAX_ATTEMPTS=3
 ```
 
 ### Bot Protection
 ```bash
-AUTHY_BOT_PROTECTION_ENABLED=true
-AUTHY_CAPTCHA_PROVIDER=hcaptcha  # or recaptcha
+TESSERA_BOT_PROTECTION_ENABLED=true
+TESSERA_CAPTCHA_PROVIDER=hcaptcha  # or recaptcha
 
 # hCaptcha
 HCAPTCHA_SITE_KEY=...
@@ -755,26 +755,26 @@ RECAPTCHA_VERSION=v3
 RECAPTCHA_MIN_SCORE=0.5
 
 # Rate limiting
-AUTHY_RATE_LIMIT_ENABLED=true
-AUTHY_MAX_REQUESTS_PER_MINUTE=10
-AUTHY_MAX_REQUESTS_PER_HOUR=100
+TESSERA_RATE_LIMIT_ENABLED=true
+TESSERA_MAX_REQUESTS_PER_MINUTE=10
+TESSERA_MAX_REQUESTS_PER_HOUR=100
 ```
 
 ### Password Security
 ```bash
-AUTHY_CHECK_BREACHED_PASSWORDS=true
+TESSERA_CHECK_BREACHED_PASSWORDS=true
 HIBP_API_KEY=...  # Optional but recommended
 
-AUTHY_PASSWORD_MIN_LENGTH=12
-AUTHY_PASSWORD_REQUIRE_UPPERCASE=true
-AUTHY_PASSWORD_REQUIRE_LOWERCASE=true
-AUTHY_PASSWORD_REQUIRE_NUMBERS=true
-AUTHY_PASSWORD_REQUIRE_SPECIAL_CHARS=true
-AUTHY_PASSWORD_DISALLOW_COMMON=true
-AUTHY_PASSWORD_DISALLOW_SEQUENTIAL=true
-AUTHY_PASSWORD_DISALLOW_REPEATED=true
-AUTHY_PASSWORD_MAX_REPEATED=3
-AUTHY_PASSWORD_DISALLOW_USERNAME=true
+TESSERA_PASSWORD_MIN_LENGTH=12
+TESSERA_PASSWORD_REQUIRE_UPPERCASE=true
+TESSERA_PASSWORD_REQUIRE_LOWERCASE=true
+TESSERA_PASSWORD_REQUIRE_NUMBERS=true
+TESSERA_PASSWORD_REQUIRE_SPECIAL_CHARS=true
+TESSERA_PASSWORD_DISALLOW_COMMON=true
+TESSERA_PASSWORD_DISALLOW_SEQUENTIAL=true
+TESSERA_PASSWORD_DISALLOW_REPEATED=true
+TESSERA_PASSWORD_MAX_REPEATED=3
+TESSERA_PASSWORD_DISALLOW_USERNAME=true
 ```
 
 ---

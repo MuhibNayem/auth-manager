@@ -1,4 +1,4 @@
-# AWS Security Best Practices Guide for Authy Package
+# AWS Security Best Practices Guide for Tessera Package
 
 ## 🚨 CRITICAL: Never Hardcode Credentials
 
@@ -15,7 +15,7 @@ db = DynamoDBAdapter({
 # ✅ CORRECT - Use IAM Roles
 db = DynamoDBAdapter({
     'region': 'us-east-1',
-    'table_prefix': 'prod_authy_'
+    'table_prefix': 'prod_tessera_'
 })
 # Credentials automatically resolved from IAM Role
 ```
@@ -24,7 +24,7 @@ db = DynamoDBAdapter({
 
 ## 🔐 AWS Credential Provider Chain
 
-The Authy Package follows the standard AWS SDK credential resolution order:
+The Tessera Package follows the standard AWS SDK credential resolution order:
 
 ### Priority Order (Highest to Lowest)
 
@@ -54,24 +54,24 @@ The Authy Package follows the standard AWS SDK credential resolution order:
 ```bash
 # Create IAM Policy
 aws iam create-policy \
-  --policy-name AuthyDynamoDBPolicy \
-  --policy-document file://authy-policy.json
+  --policy-name TesseraDynamoDBPolicy \
+  --policy-document file://tessera-policy.json
 
 # Create IAM Role for EC2
 aws iam create-role \
-  --role-name AuthyEC2Role \
+  --role-name TesseraEC2Role \
   --assume-role-policy-document file://ec2-trust.json
 
 # Attach policy to role
 aws iam attach-role-policy \
-  --role-name AuthyEC2Role \
-  --policy-arn arn:aws:iam::123456789012:policy/AuthyDynamoDBPolicy
+  --role-name TesseraEC2Role \
+  --policy-arn arn:aws:iam::123456789012:policy/TesseraDynamoDBPolicy
 
 # Launch instance with role
 aws ec2 run-instances \
   --image-id ami-0c55b159cbfafe1f0 \
   --instance-type t3.medium \
-  --iam-instance-profile Name=AuthyEC2Profile
+  --iam-instance-profile Name=TesseraEC2Profile
 ```
 
 **Python Code:**
@@ -79,7 +79,7 @@ aws ec2 run-instances \
 # No credentials needed - automatically uses instance role
 db = DynamoDBAdapter({
     'region': 'us-east-1',
-    'table_prefix': 'prod_authy_'
+    'table_prefix': 'prod_tessera_'
 })
 await db.connect()
 ```
@@ -93,15 +93,15 @@ await db.connect()
 **Task Definition Example:**
 ```json
 {
-  "family": "authy-service",
+  "family": "tessera-service",
   "containerDefinitions": [
     {
-      "name": "authy-container",
-      "image": "your-registry/authy:latest"
+      "name": "tessera-container",
+      "image": "your-registry/tessera:latest"
     }
   ],
-  "taskRoleArn": "arn:aws:iam::123456789012:role/AuthyECSTaskRole",
-  "executionRoleArn": "arn:aws:iam::123456789012:role/AuthyECSExecutionRole"
+  "taskRoleArn": "arn:aws:iam::123456789012:role/TesseraECSTaskRole",
+  "executionRoleArn": "arn:aws:iam::123456789012:role/TesseraECSExecutionRole"
 }
 ```
 
@@ -110,7 +110,7 @@ await db.connect()
 # Automatically uses task role
 db = DynamoDBAdapter({
     'region': 'us-west-2',
-    'table_prefix': 'prod_authy_'
+    'table_prefix': 'prod_tessera_'
 })
 ```
 
@@ -154,7 +154,7 @@ async def lambda_handler(event, context):
       "Action": "sts:AssumeRoleWithWebIdentity",
       "Condition": {
         "StringEquals": {
-          "oidc.eks.us-west-2.amazonaws.com/id/EXAMPLED123456:sub": "system:serviceaccount:authy:authy-sa"
+          "oidc.eks.us-west-2.amazonaws.com/id/EXAMPLED123456:sub": "system:serviceaccount:tessera:tessera-sa"
         }
       }
     }
@@ -167,10 +167,10 @@ async def lambda_handler(event, context):
 apiVersion: v1
 kind: ServiceAccount
 metadata:
-  name: authy-sa
-  namespace: authy
+  name: tessera-sa
+  namespace: tessera
   annotations:
-    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/AuthyEKSRole
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456789012:role/TesseraEKSRole
 ```
 
 3. **Deploy Application:**
@@ -178,14 +178,14 @@ metadata:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: authy-deployment
+  name: tessera-deployment
 spec:
   template:
     spec:
-      serviceAccountName: authy-sa
+      serviceAccountName: tessera-sa
       containers:
-      - name: authy
-        image: your-registry/authy:latest
+      - name: tessera
+        image: your-registry/tessera:latest
         env:
         - name: AWS_REGION
           value: "us-west-2"
@@ -215,7 +215,7 @@ aws sso login
 region = us-east-1
 output = json
 
-[profile authy-dev]
+[profile tessera-dev]
 region = us-east-1
 ```
 
@@ -244,7 +244,7 @@ import boto3
 from botocore.exceptions import ClientError
 
 def get_secret():
-    secret_name = "authy/aws/credentials"
+    secret_name = "tessera/aws/credentials"
     region_name = "us-east-1"
     
     session = boto3.session.Session()
@@ -270,8 +270,8 @@ For accessing DynamoDB in another AWS account:
 
 **~/.aws/config:**
 ```ini
-[profile authy-prod]
-role_arn = arn:aws:iam::987654321098:role/AuthyCrossAccountRole
+[profile tessera-prod]
+role_arn = arn:aws:iam::987654321098:role/TesseraCrossAccountRole
 source_profile = default
 external_id = your-external-id-here
 ```
@@ -279,7 +279,7 @@ external_id = your-external-id-here
 **Python:**
 ```python
 import os
-os.environ['AWS_PROFILE'] = 'authy-prod'
+os.environ['AWS_PROFILE'] = 'tessera-prod'
 
 db = DynamoDBAdapter({'region': 'us-east-1'})
 ```
@@ -294,7 +294,7 @@ def assume_role(role_arn, external_id=None):
     
     kwargs = {
         'RoleArn': role_arn,
-        'RoleSessionName': 'AuthySession'
+        'RoleSessionName': 'TesseraSession'
     }
     
     if external_id:
@@ -304,7 +304,7 @@ def assume_role(role_arn, external_id=None):
     return credentials
 
 # Use temporary credentials
-creds = assume_role('arn:aws:iam::987654321098:role/AuthyRole')
+creds = assume_role('arn:aws:iam::987654321098:role/TesseraRole')
 
 db = DynamoDBAdapter({
     'region': 'us-east-1',
@@ -337,7 +337,7 @@ db = DynamoDBAdapter({
         "dynamodb:BatchWriteItem"
       ],
       "Resource": [
-        "arn:aws:dynamodb:us-east-1:123456789012:table/authy_*"
+        "arn:aws:dynamodb:us-east-1:123456789012:table/tessera_*"
       ]
     },
     {
@@ -352,7 +352,7 @@ db = DynamoDBAdapter({
       "Action": [
         "dynamodb:DescribeTable"
       ],
-      "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/authy_*"
+      "Resource": "arn:aws:dynamodb:us-east-1:123456789012:table/tessera_*"
     }
   ]
 }
@@ -365,7 +365,7 @@ db = DynamoDBAdapter({
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "AuthyDynamoDBAccess",
+      "Sid": "TesseraDynamoDBAccess",
       "Effect": "Allow",
       "Action": [
         "dynamodb:GetItem",
@@ -380,9 +380,9 @@ db = DynamoDBAdapter({
         "dynamodb:TransactWriteItems"
       ],
       "Resource": [
-        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_authy_users",
-        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_authy_sessions",
-        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_authy_organizations",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_tessera_users",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_tessera_sessions",
+        "arn:aws:dynamodb:us-east-1:123456789012:table/prod_tessera_organizations",
         "arn:aws:dynamodb:us-east-1:123456789012:index/*"
       ],
       "Condition": {
@@ -400,7 +400,7 @@ db = DynamoDBAdapter({
       "Resource": "*",
       "Condition": {
         "StringEquals": {
-          "cloudwatch:namespace": "Authy"
+          "cloudwatch:namespace": "Tessera"
         }
       }
     }

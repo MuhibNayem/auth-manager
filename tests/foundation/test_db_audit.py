@@ -8,8 +8,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from authy_package.db import InMemoryDatabase
-from authy_package.db.memory import GENESIS_CHECKSUM
+from tessera.db import InMemoryDatabase
+from tessera.db.memory import GENESIS_CHECKSUM
 
 
 def _expected_checksum(record: dict) -> str:

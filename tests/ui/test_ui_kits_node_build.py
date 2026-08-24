@@ -1,7 +1,7 @@
 """Optional node-based build verification for the React admin dashboard.
 
 Skipped by default so `pytest tests/ui` stays node-free and fast. Enable
-with the environment variable AUTHY_UI_RUN_NODE=1. Requires `node` and
+with the environment variable TESSERA_UI_RUN_NODE=1. Requires `node` and
 `npm` on PATH; runs `npm install --no-audit --no-fund` followed by
 `npm run build` (tsc typecheck + vite build) in the dashboard directory.
 """
@@ -14,11 +14,11 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DASHBOARD = REPO_ROOT / "authy_package" / "ui_kits" / "react" / "admin-dashboard"
+DASHBOARD = REPO_ROOT / "tessera" / "ui_kits" / "react" / "admin-dashboard"
 
 pytestmark = pytest.mark.skipif(
-    os.environ.get("AUTHY_UI_RUN_NODE") != "1",
-    reason="node build tests are opt-in: set AUTHY_UI_RUN_NODE=1",
+    os.environ.get("TESSERA_UI_RUN_NODE") != "1",
+    reason="node build tests are opt-in: set TESSERA_UI_RUN_NODE=1",
 )
 
 
