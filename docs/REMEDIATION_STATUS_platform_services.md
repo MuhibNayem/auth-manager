@@ -8,7 +8,7 @@ as-is and never modified.
 
 Verification (this workstream):
 - `./.venv/bin/python -m pytest tests/platform_services tests/foundation -q` → exit 0 (green).
-- `python -m compileall authy_package/sms authy_package/bot_protection authy_package/cli tests/platform_services` → clean.
+- `python -m compileall tessera/sms tessera/bot_protection tessera/cli tests/platform_services` → clean.
 - No network, no docker, no external services required by tests.
 
 ## 1. sms/ — FIXED
@@ -18,7 +18,7 @@ Verification (this workstream):
 | Codes via `random.choices` (predictable) | `secrets.choice` per digit (CSPRNG, §0.3); regression test inspects the source |
 | Plain `!=` code comparison | sha256(code) compared via `hmac.compare_digest` (§0.4); only `code_hash` persisted, never plaintext |
 | Sliding rate-limit window (TTL re-set on every increment) | Fixed window: `incr` + `expire` ONLY on the first increment; `retry_after` from real remaining TTL (§3 primitives) |
-| Legacy cache API (`set(..., expire=)`) + ad-hoc keys | §3 primitives (`set_json/get_json/incr/expire/ttl/delete`) with §3.1 key `authy:sms:{phone}` → `{code_hash, attempts, expires_at, last_sent_at}`; counter at `authy:ratelimit:sms:{phone}` |
+| Legacy cache API (`set(..., expire=)`) + ad-hoc keys | §3 primitives (`set_json/get_json/incr/expire/ttl/delete`) with §3.1 key `tessera:sms:{phone}` → `{code_hash, attempts, expires_at, last_sent_at}`; counter at `tessera:ratelimit:sms:{phone}` |
 | Naive `datetime.now()` | timezone-aware UTC (§0.5) |
 | Untyped exceptions | `SMSProviderError → ProviderError`, `TooManyAttemptsError → RateLimitError(retry_after)`, expired/invalid → `AuthenticationError` (§1; legacy names kept as subclasses) |
 | Providers returned `success=False` on upstream failure | `twilio_provider.py` / `aws_sns_provider.py` raise `SMSProviderError` after retry budget; manager surfaces structured `{success: False, error}` (delivery passthrough) |
@@ -32,7 +32,7 @@ Verification (this workstream):
   (`lpush`/`lrange`/`expire`); expired timestamps are trimmed on every read
   (AbstractCache has no `ltrim`, so the list is rebuilt from surviving
   entries — documented in code). Keys moved to the §3.1
-  `authy:ratelimit:{scope}:{id}` namespace.
+  `tessera:ratelimit:{scope}:{id}` namespace.
 - Fake `SUSPICIOUS_IP_PATTERNS = []` replaced by an HONEST local heuristic in
   `analyze_ip_address` (`ipaddress`-based: cloud-metadata IPs, link-local,
   loopback, private ranges, unparseable input), explicitly documented as a
@@ -55,26 +55,26 @@ Verification (this workstream):
 
 Shared plumbing (`cli/utils`):
 - `save_config` writes JSON with **0600** (`os.open` + `O_NOFOLLOW` + chmod;
-  `~/.authy` dir 0700); `load_config`/`mask_value`/`is_secret_key` for safe
+  `~/.tessera` dir 0700); `load_config`/`mask_value`/`is_secret_key` for safe
   display of secret-looking keys.
 - `get_connected_db()` via the §4 `get_database` factory; a per-process
   registry makes the in-memory backend shareable across CLI invocations in
-  one process (documented). Non-memory backend without `AUTHY_DB_URL` is
+  one process (documented). Non-memory backend without `TESSERA_DB_URL` is
   reported as **not configured** (never faked). All commands print
   configuration guidance and exit 1 when the db is unreachable.
 
 Commands:
 - `__init__.py`: click group kept; NO import-time logging side effect
   (basicConfig moved into `main()`; basicConfig is itself a handler guard).
-  Added `authy dashboard` command. Version comes from
-  `authy_package.__version__` (single source of truth).
+  Added `tessera dashboard` command. Version comes from
+  `tessera.__version__` (single source of truth).
 - `commands/__init__.py`: ADDED (was missing; packaging robustness).
 - `doctor`: REAL checks — Python version, core import, per-extra import
   probes (missing optional extras reported as "missing (optional)", not
   failures), `AuthConfig.from_env().validate()`, db + cache `health_check()`
   with 5s timeout (cache disabled → "not configured" pass). Honest ✓/✗/○
   table; exit 1 on any failure.
-- `migrate`: REAL migrations. Modules discovered in `./authy_migrations/`
+- `migrate`: REAL migrations. Modules discovered in `./tessera_migrations/`
   (async `upgrade(db)`/`downgrade(db)` against the §4 contract); applied
   versions tracked in db settings kv under `schema_migrations`
   (`[{version, applied_at}]`); run/rollback/status truthful; failed
@@ -88,8 +88,8 @@ Commands:
 - `logs`: one-shot tail of the audit log; `--follow` is HONEST polling
   (interval + bounded `--iterations`; help text says "poll, not a live
   stream").
-- `config`: show/set/get persisted at `~/.authy/config.json` (override via
-  `--file` / `AUTHY_CONFIG_FILE`) with 0600 perms; secrets masked in `show`.
+- `config`: show/set/get persisted at `~/.tessera/config.json` (override via
+  `--file` / `TESSERA_CONFIG_FILE`) with 0600 perms; secrets masked in `show`.
 - `webhooks`: list/create/test via db. URL validation per §7 (https enforced
   in production; DNS resolution; loopback/private/link-local/metadata
   rejected); `secrets.token_hex(32)` signing secret shown ONCE at creation,
@@ -110,13 +110,13 @@ Commands:
 - `dev`: default bind 127.0.0.1; the static fallback ALWAYS binds
   127.0.0.1 regardless of `--host` (§9); cert generation uses
   timezone-aware datetimes (§0.5, `utcnow()` removed).
-- `init`: REAL templates — `authy_package.frameworks.*` import paths; §10
+- `init`: REAL templates — `tessera.frameworks.*` import paths; §10
   parity API only (`require_auth`/`require_role`/`rate_limit`/
-  `optional_auth`; Django template uses `request.authy_user` and never
+  `optional_auth`; Django template uses `request.tessera_user` and never
   touches `request.user`); generated `.env` gets
-  `AUTHY_JWT_SECRET=<secrets.token_urlsafe(48)>` (never a placeholder;
+  `TESSERA_JWT_SECRET=<secrets.token_urlsafe(48)>` (never a placeholder;
   `.env.example` contains no secret); no hardcoded passwords anywhere;
-  scaffolds `authy_migrations/` with one working sample migration; `--yes`
+  scaffolds `tessera_migrations/` with one working sample migration; `--yes`
   non-interactive mode.
 - `tui/dashboard.py`: single snapshot render of REAL db metrics
   (`count_users`, audit totals, webhook count, `health_check()`); every
@@ -154,7 +154,7 @@ Commands:
 ## 5. Notes / coordination
 
 - During the run, two cross-workstream import breakages blocked
-  `import authy_package` (stale `core/__init__.py` name, stale
+  `import tessera` (stale `core/__init__.py` name, stale
   `organizations/__init__.py` names). Both were reported with file/line
   evidence to the owning agents (core-auth-fix, platform-admin-fix) and
   confirmed fixed by them; no files outside this workstream's ownership

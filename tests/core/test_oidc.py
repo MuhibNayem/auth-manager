@@ -9,8 +9,8 @@ import jwt as pyjwt
 import pytest
 from cryptography.hazmat.primitives.asymmetric import rsa
 
-from authy_package.errors import AuthenticationError, ConfigError
-from authy_package.oidc import OIDCConfig, OIDCManager
+from tessera.errors import AuthenticationError, ConfigError
+from tessera.oidc import OIDCConfig, OIDCManager
 
 ISSUER = "https://idp.example.com"
 CLIENT_ID = "test-client"
@@ -57,7 +57,7 @@ async def test_state_generated_stored_and_single_use(cache):
     manager = OIDCManager(_config(), database=None, cache=cache)
     url, state, verifier = await manager.create_authorization_url_async()
     assert "state=" in url and verifier
-    assert await cache.get(f"authy:oauth:state:{state}") is not None
+    assert await cache.get(f"tessera:oauth:state:{state}") is not None
 
     captured = {}
 
@@ -200,7 +200,7 @@ async def test_jwks_refreshed_once_on_unknown_kid(cache, rsa_jwk, monkeypatch):
 
 
 def test_b64url_padding_idiom():
-    from authy_package.oidc.oidc_manager import _b64url_decode
+    from tessera.oidc.oidc_manager import _b64url_decode
 
     for length in range(1, 10):
         original = bytes(range(length))
@@ -220,7 +220,7 @@ async def test_token_cache_keyed_by_full_sha256(cache):
     _url, state, verifier = await manager.create_authorization_url_async()
     await manager.exchange_code_for_tokens("code", state, verifier)
 
-    expected_key = "authy:oidc:tokens:" + hashlib.sha256(
+    expected_key = "tessera:oidc:tokens:" + hashlib.sha256(
         b"the-full-access-token"
     ).hexdigest()
     assert await cache.get_json(expected_key) is not None

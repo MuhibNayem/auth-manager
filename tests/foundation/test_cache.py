@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from authy_package.cache import AbstractCache, InMemoryCache, RedisCache
+from tessera.cache import AbstractCache, InMemoryCache, RedisCache
 
 
 class TestStrings:

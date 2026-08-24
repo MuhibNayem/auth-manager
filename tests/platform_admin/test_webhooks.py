@@ -10,8 +10,8 @@ import httpx
 import pytest
 import pytest_asyncio
 
-from authy_package.cache import InMemoryCache
-from authy_package.webhooks.webhook_manager import (
+from tessera.cache import InMemoryCache
+from tessera.webhooks.webhook_manager import (
     RETRY_DELAYS_SECONDS,
     WEBHOOK_QUEUE_KEY,
     WebhookEventType,
@@ -38,7 +38,7 @@ def fake_dns(monkeypatch):
             raise socket.gaierror(f"no such host: {host}")
 
         monkeypatch.setattr(
-            "authy_package.webhooks.webhook_manager.socket.getaddrinfo",
+            "tessera.webhooks.webhook_manager.socket.getaddrinfo",
             fake_getaddrinfo,
         )
 

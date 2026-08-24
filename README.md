@@ -1,16 +1,16 @@
-# authy-package — Authentication Platform for Python
+# tessera — Authentication Platform for Python
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/downloads/)
 
-> ## ⚠️ RENAMING NOTE (please read)
-> The package name **"Authy" collides with Twilio's "Authy" trademark**. The
-> `authy-package` distribution and the `authy_package` import name are kept for
-> backward compatibility during the 2.0 remediation, but **a rename is
-> recommended before wider publication**. Do not build new brand assets on the
-> current name.
+> ## Renamed to Tessera
+> This framework was formerly distributed as `authy-package` / `authy_package`.
+> It has been renamed to **Tessera** (distribution `tessera`, import
+> `tessera`). All code, config prefixes (`TESSERA_*`), cache keys
+> (`tessera:*`), and docs now use the new name. The rename also resolves the
+> prior trademark collision with Twilio's "Authy" product.
 
-`authy-package` is an async-first authentication platform for Python:
+`tessera` is an async-first authentication platform for Python:
 traditional credentials, MFA, passwordless flows, session management,
 multi-tenant organizations, RBAC, audit logging, webhooks, enterprise SSO
 (SAML 2.0 / OIDC), and framework adapters for FastAPI, Flask, and Django —
@@ -27,25 +27,25 @@ than patched; see [Status of features](#status-of-features).
 Slim core (traditional auth, sessions, MFA, CLI):
 
 ```bash
-pip install authy-package
+pip install tessera
 ```
 
 Extras install only what a feature needs:
 
 ```bash
-pip install "authy-package[fastapi]"       # FastAPI adapter (+ uvicorn)
-pip install "authy-package[flask]"         # Flask adapter
-pip install "authy-package[django]"        # Django adapter
-pip install "authy-package[postgresql]"    # SQLAlchemy + asyncpg
-pip install "authy-package[mongodb]"       # motor
-pip install "authy-package[dynamodb]"      # aioboto3
-pip install "authy-package[saml]"          # SAML 2.0 SP (lxml, xmlsec, python3-saml)
-pip install "authy-package[oidc]"          # OIDC (no extra deps beyond core)
-pip install "authy-package[sms]"           # Twilio + AWS SNS (boto3)
-pip install "authy-package[captcha]"       # hCaptcha/reCAPTCHA (no extra deps)
-pip install "authy-package[webauthn]"      # Passkeys / WebAuthn
-pip install "authy-package[all]"           # all of the above (+ argon2 backend)
-pip install "authy-package[dev]"           # pytest, pytest-asyncio, pytest-cov, ruff, mypy
+pip install "tessera[fastapi]"       # FastAPI adapter (+ uvicorn)
+pip install "tessera[flask]"         # Flask adapter
+pip install "tessera[django]"        # Django adapter
+pip install "tessera[postgresql]"    # SQLAlchemy + asyncpg
+pip install "tessera[mongodb]"       # motor
+pip install "tessera[dynamodb]"      # aioboto3
+pip install "tessera[saml]"          # SAML 2.0 SP (lxml, xmlsec, python3-saml)
+pip install "tessera[oidc]"          # OIDC (no extra deps beyond core)
+pip install "tessera[sms]"           # Twilio + AWS SNS (boto3)
+pip install "tessera[captcha]"       # hCaptcha/reCAPTCHA (no extra deps)
+pip install "tessera[webauthn]"      # Passkeys / WebAuthn
+pip install "tessera[all]"           # all of the above (+ argon2 backend)
+pip install "tessera[dev]"           # pytest, pytest-asyncio, pytest-cov, ruff, mypy
 ```
 
 Requires Python **3.9 – 3.12** (`>=3.9,<4.0`).
@@ -58,18 +58,18 @@ Requires Python **3.9 – 3.12** (`>=3.9,<4.0`).
 import asyncio
 import os
 
-from authy_package.config import AuthConfig
-from authy_package.core.auth_manager import TraditionalAuthManager
-from authy_package.db.sql import SQLDatabase
-from authy_package.cache.redis_cache import RedisCache
-from authy_package.mfa.mfa_setup import MFAAuthManager
-from authy_package.utils.security import SecurityManager
+from tessera.config import AuthConfig
+from tessera.core.auth_manager import TraditionalAuthManager
+from tessera.db.sql import SQLDatabase
+from tessera.cache.redis_cache import RedisCache
+from tessera.mfa.mfa_setup import MFAAuthManager
+from tessera.utils.security import SecurityManager
 
 
 async def main() -> None:
     # Connection settings come from the environment — never hardcode them.
-    db = SQLDatabase(os.environ["AUTHY_DB_URL"])
-    cache = RedisCache(os.environ["AUTHY_REDIS_URL"])
+    db = SQLDatabase(os.environ["TESSERA_DB_URL"])
+    cache = RedisCache(os.environ["TESSERA_REDIS_URL"])
     await db.connect()
 
     mfa = MFAAuthManager(db=db)
@@ -123,7 +123,7 @@ zero-service quick start on the built-in in-memory fakes lives in
 | SMS verification | Twilio / AWS SNS providers (`[sms]` extra) | Rebuilt |
 | Bot protection | hCaptcha / reCAPTCHA + rate limiting (`[captcha]` extra) | Rebuilt |
 | Framework adapters | FastAPI, Flask, Django (identical decorator surface) | Rebuilt |
-| CLI | `authy init/dev/doctor/migrate/users/audit/logs/config/webhooks/deploy` | Rebuilt |
+| CLI | `tessera init/dev/doctor/migrate/users/audit/logs/config/webhooks/deploy` | Rebuilt |
 
 "Rebuilt" means the subsystem was re-implemented against the binding
 contracts in [`docs/CONTRACTS.md`](docs/CONTRACTS.md) during the 2.0
@@ -139,7 +139,7 @@ and organization-aware checks.
 
 ```python
 from fastapi import Depends, FastAPI
-from authy_package.frameworks.fastapi_adapter import FastAPIAuth
+from tessera.frameworks.fastapi_adapter import FastAPIAuth
 
 app = FastAPI()
 fastapi_auth = FastAPIAuth(auth_manager)
@@ -155,7 +155,7 @@ async def admin(user=Depends(fastapi_auth.require_role("admin", "owner"))):
     return {"ok": True}
 ```
 
-Flask and Django equivalents live in `authy_package.frameworks`
+Flask and Django equivalents live in `tessera.frameworks`
 (`FlaskAuth`, `DjangoAuth`); see the examples and RUNBOOK.
 
 ---
@@ -171,7 +171,7 @@ One unified async `AbstractDatabase` contract with these implementations:
 | DynamoDB | `DynamoDBAdapter` (aioboto3) | IAM-role credentials; see [AWS_SECURITY_GUIDE.md](AWS_SECURITY_GUIDE.md) |
 | In-memory | `InMemoryDatabase` | Tests and local dev only |
 
-Select via `AUTHY_DB_TYPE`: `sql` | `mongodb` | `dynamodb` | `memory`.
+Select via `TESSERA_DB_TYPE`: `sql` | `mongodb` | `dynamodb` | `memory`.
 
 Legacy `CassandraAdapter` and `RedisAdapter` (Redis as a primary database)
 were **removed** in 2.0: Redis is the cache/session store (`RedisCache`),
@@ -191,19 +191,19 @@ Set the result (and your connection strings) in the environment or a
 `.env` file that is excluded from version control:
 
 ```env
-AUTHY_ENV=production
-AUTHY_JWT_SECRET=<generated above, 32+ chars>
-AUTHY_DB_TYPE=sql
-AUTHY_DB_URL=postgresql+asyncpg://<user>:<password>@<host>:5432/<db>
-AUTHY_REDIS_URL=redis://<host>:6379
-AUTHY_BASE_URL=https://auth.example.com
+TESSERA_ENV=production
+TESSERA_JWT_SECRET=<generated above, 32+ chars>
+TESSERA_DB_TYPE=sql
+TESSERA_DB_URL=postgresql+asyncpg://<user>:<password>@<host>:5432/<db>
+TESSERA_REDIS_URL=redis://<host>:6379
+TESSERA_BASE_URL=https://auth.example.com
 ```
 
 Guidance:
 
 - `AuthConfig.validate()` refuses to start with an empty/default JWT
   secret, and in `production` it rejects remaining placeholder values and
-  non-HTTPS `AUTHY_BASE_URL`. Treat those errors as blocking.
+  non-HTTPS `TESSERA_BASE_URL`. Treat those errors as blocking.
 - Keep secrets out of code, logs, and error messages. Password reset
   tokens are delivered by email link only — never printed.
 - Password hashing uses **bcrypt directly** (passlib was removed
@@ -211,7 +211,7 @@ Guidance:
   (install the `all` extra or `argon2-cffi` separately).
 - For AWS-backed features (DynamoDB, SNS), use IAM roles — never static
   keys. See [AWS_SECURITY_GUIDE.md](AWS_SECURITY_GUIDE.md).
-- Webhook receiver endpoints must verify `X-Authy-Signature` with the
+- Webhook receiver endpoints must verify `X-Tessera-Signature` with the
   provided verifier; see the RUNBOOK.
 
 Compliance note: this library ships **audit-logging primitives**
@@ -246,7 +246,7 @@ git clone https://github.com/MuhibNayem/auth-manager.git
 cd auth-manager
 pip install -e ".[all,dev]"
 pytest tests/
-ruff check authy_package tests examples
+ruff check tessera tests examples
 ```
 
 CI runs ruff + a pytest matrix on Python 3.9–3.12 (see
@@ -264,11 +264,11 @@ never happens on plain pushes to `main`.
   SMS verification, bot protection, breached-password detection.
 - [`AWS_SECURITY_GUIDE.md`](AWS_SECURITY_GUIDE.md) — AWS credential best
   practices (IAM roles, IRSA, cross-account).
-- [`authy_package/README.md`](authy_package/README.md) — SAML 2.0 / OIDC
+- [`tessera/README.md`](tessera/README.md) — SAML 2.0 / OIDC
   enterprise SSO guide.
-- Status documents: `AUTHY_ADMIN_DASHBOARD_REPORT.md`,
-  `AUTHY_ENTERPRISE_PHASES_REPORT.md`,
-  `AUTHY_RBAC_IMPLEMENTATION_REPORT.md`, and
+- Status documents: `TESSERA_ADMIN_DASHBOARD_REPORT.md`,
+  `TESSERA_ENTERPRISE_PHASES_REPORT.md`,
+  `TESSERA_RBAC_IMPLEMENTATION_REPORT.md`, and
   `docs/REMEDIATION_STATUS_packaging.md`.
 
 ---

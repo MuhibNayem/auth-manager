@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from authy_package.utils import security
-from authy_package.utils.security import (
+from tessera.utils import security
+from tessera.utils.security import (
     hash_password,
     verify_password,
     verify_password_constant_time,

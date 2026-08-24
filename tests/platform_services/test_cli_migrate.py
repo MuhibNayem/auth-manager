@@ -1,8 +1,8 @@
-"""``authy migrate`` CLI tests — real migrations, schema_migrations ledger."""
+"""``tessera migrate`` CLI tests — real migrations, schema_migrations ledger."""
 
 from __future__ import annotations
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 FAILING_MIGRATION = '''"""Fails on purpose."""
 
@@ -25,7 +25,7 @@ def test_migrate_create_run_status(runner, memory_db, monkeypatch, tmp_path):
 
     result = runner.invoke(cli, ["migrate", "create", "-n", "add flag"])
     assert result.exit_code == 0, result.output
-    migrations = list((tmp_path / "authy_migrations").glob("*.py"))
+    migrations = list((tmp_path / "tessera_migrations").glob("*.py"))
     assert len(migrations) == 1
     assert migrations[0].name.endswith("_add_flag.py")
     version = migrations[0].stem
@@ -59,13 +59,13 @@ def test_migrate_create_run_status(runner, memory_db, monkeypatch, tmp_path):
 def test_migrate_failed_migration_exits_nonzero(runner, memory_db, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
 
-    (tmp_path / "authy_migrations").mkdir()
-    (tmp_path / "authy_migrations" / "0001_ok.py").write_text(
+    (tmp_path / "tessera_migrations").mkdir()
+    (tmp_path / "tessera_migrations" / "0001_ok.py").write_text(
         'async def upgrade(db):\n    await db.set_setting("m1", True)\n\n'
         'async def downgrade(db):\n    await db.set_setting("m1", None)\n',
         encoding="utf-8",
     )
-    (tmp_path / "authy_migrations" / "0002_bad.py").write_text(
+    (tmp_path / "tessera_migrations" / "0002_bad.py").write_text(
         FAILING_MIGRATION, encoding="utf-8"
     )
 
@@ -105,14 +105,14 @@ def test_migrate_run_without_directory_fails(runner, memory_db, monkeypatch, tmp
     monkeypatch.chdir(tmp_path)
     result = runner.invoke(cli, ["migrate", "run"])
     assert result.exit_code == 1
-    assert "authy_migrations" in result.output
+    assert "tessera_migrations" in result.output
 
 
 def test_migrate_run_without_db_fails_with_guidance(runner, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    (tmp_path / "authy_migrations").mkdir()
-    monkeypatch.setenv("AUTHY_DB_TYPE", "sql")
-    monkeypatch.delenv("AUTHY_DB_URL", raising=False)
+    (tmp_path / "tessera_migrations").mkdir()
+    monkeypatch.setenv("TESSERA_DB_TYPE", "sql")
+    monkeypatch.delenv("TESSERA_DB_URL", raising=False)
 
     result = runner.invoke(cli, ["migrate", "run"])
     assert result.exit_code == 1

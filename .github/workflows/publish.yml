@@ -16,13 +16,13 @@
 # 6. Actions pinned to current major versions (v4/v5; no deprecated v2).
 #
 # Release procedure (documented in RUNBOOK.md):
-#   1. Bump version in pyproject.toml AND authy_package/__init__.py
+#   1. Bump version in pyproject.toml AND tessera/__init__.py
 #      (kept in sync by the CI version-sync job), merge to main.
 #   2. git tag v<version> && git push origin v<version>
 #
 # PyPI publishing uses OIDC trusted publishing (no long-lived API token):
 # the `pypi` environment must be configured as a trusted publisher for
-# the `authy-package` project on PyPI.
+# the `tessera` project on PyPI.
 
 name: Publish release
 
@@ -84,7 +84,7 @@ jobs:
           tag = os.environ["GITHUB_REF_NAME"].lstrip("v")
           assert tag == version, (
               f"tag v{tag} does not match pyproject.toml version {version!r}; "
-              "bump pyproject.toml + authy_package/__init__.py first"
+              "bump pyproject.toml + tessera/__init__.py first"
           )
           print(f"tag matches package version {version}")
           PY
@@ -108,7 +108,7 @@ jobs:
     needs: build
     environment:
       name: pypi
-      url: https://pypi.org/project/authy-package/
+      url: https://pypi.org/project/tessera/
     permissions:
       id-token: write
     steps:

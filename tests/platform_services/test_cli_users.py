@@ -1,10 +1,10 @@
-"""``authy users`` CLI tests against a seeded InMemoryDatabase."""
+"""``tessera users`` CLI tests against a seeded InMemoryDatabase."""
 
 from __future__ import annotations
 
 import asyncio
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 
 def _seed(db):
@@ -42,8 +42,8 @@ def test_users_list_shows_seeded_users(runner, memory_db):
 
 
 def test_users_list_without_db_prints_guidance(runner, monkeypatch):
-    monkeypatch.setenv("AUTHY_DB_TYPE", "sql")
-    monkeypatch.delenv("AUTHY_DB_URL", raising=False)
+    monkeypatch.setenv("TESSERA_DB_TYPE", "sql")
+    monkeypatch.delenv("TESSERA_DB_URL", raising=False)
     result = runner.invoke(cli, ["users", "list"])
     assert result.exit_code == 1
     assert "not configured" in result.output

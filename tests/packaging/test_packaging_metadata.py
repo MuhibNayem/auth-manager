@@ -5,7 +5,7 @@ pipeline invariants:
 
 - root ``pyproject.toml`` is the only packaging config (name/version/
   python range/extras), with ``passlib`` absent everywhere;
-- ``authy_package/__init__.py:__version__`` stays in sync with it;
+- ``tessera/__init__.py:__version__`` stays in sync with it;
 - every ``.github/workflows/*.yml`` parses as YAML;
 - a pytest job exists in CI and gates the PyPI publish job.
 
@@ -23,7 +23,7 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[2]
 PYPROJECT_PATH = REPO_ROOT / "pyproject.toml"
 WORKFLOWS_DIR = REPO_ROOT / ".github" / "workflows"
-INIT_PATH = REPO_ROOT / "authy_package" / "__init__.py"
+INIT_PATH = REPO_ROOT / "tessera" / "__init__.py"
 
 REQUIRED_EXTRAS = {
     "fastapi",
@@ -50,9 +50,9 @@ def _load_pyproject() -> dict:
 # --- pyproject.toml: identity ------------------------------------------------
 
 
-def test_pyproject_name_is_authy_package() -> None:
+def test_pyproject_name_is_tessera() -> None:
     meta = _load_pyproject()
-    assert meta["tool"]["poetry"]["name"] == "authy-package"
+    assert meta["tool"]["poetry"]["name"] == "tessera"
 
 
 def test_pyproject_version_is_2_0_0() -> None:
@@ -65,7 +65,7 @@ def test_pyproject_version_matches_package_init() -> None:
     match = re.search(
         r'__version__\s*=\s*["\']([^"\']+)["\']', INIT_PATH.read_text(encoding="utf-8")
     )
-    assert match, "__version__ not found in authy_package/__init__.py"
+    assert match, "__version__ not found in tessera/__init__.py"
     assert meta["tool"]["poetry"]["version"] == match.group(1)
 
 
@@ -85,8 +85,8 @@ def test_build_backend_is_poetry_core() -> None:
 
 def test_no_inner_pyproject_remains() -> None:
     # One packaging config only (CONTRACTS.md §11).
-    assert not (REPO_ROOT / "authy_package" / "pyproject.toml").exists()
-    assert not (REPO_ROOT / "authy_package" / "requirements-enterprise.txt").exists()
+    assert not (REPO_ROOT / "tessera" / "pyproject.toml").exists()
+    assert not (REPO_ROOT / "tessera" / "requirements-enterprise.txt").exists()
 
 
 # --- dependencies & extras ----------------------------------------------------

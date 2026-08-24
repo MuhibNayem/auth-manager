@@ -13,7 +13,7 @@ from click.testing import CliRunner
 
 #: Env vars wiped before every test so AuthConfig.from_env is deterministic.
 _ENV_PREFIXES = (
-    "AUTHY_",
+    "TESSERA_",
     "TWILIO_",
     "HCAPTCHA_",
     "RECAPTCHA_",
@@ -36,9 +36,9 @@ def isolated_env(monkeypatch):
     for var in list(os.environ):
         if var.startswith(_ENV_PREFIXES):
             monkeypatch.delenv(var, raising=False)
-    monkeypatch.delenv("AUTHY_CONFIG_FILE", raising=False)
+    monkeypatch.delenv("TESSERA_CONFIG_FILE", raising=False)
 
-    from authy_package.cli import utils as cli_utils
+    from tessera.cli import utils as cli_utils
 
     cli_utils._memory_dbs.clear()
     yield
@@ -57,13 +57,13 @@ def runner(monkeypatch) -> CliRunner:
 def memory_db(monkeypatch):
     """A fresh InMemoryDatabase registered as the CLI's connected database.
 
-    The CLI resolves ``AUTHY_DB_TYPE=memory`` through a per-process registry;
+    The CLI resolves ``TESSERA_DB_TYPE=memory`` through a per-process registry;
     seeding it here lets CliRunner invocations share this exact instance.
     """
-    monkeypatch.setenv("AUTHY_DB_TYPE", "memory")
+    monkeypatch.setenv("TESSERA_DB_TYPE", "memory")
 
-    from authy_package.cli import utils as cli_utils
-    from authy_package.db import InMemoryDatabase
+    from tessera.cli import utils as cli_utils
+    from tessera.db import InMemoryDatabase
 
     db = InMemoryDatabase()
     cli_utils._memory_dbs["memory"] = db

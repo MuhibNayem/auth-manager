@@ -10,7 +10,7 @@ import secrets
 
 import pytest
 
-from authy_package.errors import AuthenticationError, ConfigError
+from tessera.errors import AuthenticationError, ConfigError
 
 
 # -- NEW-1: placeholder detection without false positives ---------------------
@@ -38,7 +38,7 @@ def test_classic_placeholders_still_rejected(make_config) -> None:
 # -- NEW-4: webhook SSRF blocks RFC6598 shared (CGNAT) space ------------------
 
 def test_webhook_cgnat_address_rejected() -> None:
-    from authy_package.webhooks.webhook_manager import validate_endpoint_url
+    from tessera.webhooks.webhook_manager import validate_endpoint_url
 
     with pytest.raises(ValueError, match="forbidden address"):
         validate_endpoint_url("https://100.64.0.10/hook", env="development")
@@ -47,7 +47,7 @@ def test_webhook_cgnat_address_rejected() -> None:
 
 
 def test_webhook_public_address_allowed() -> None:
-    from authy_package.webhooks.webhook_manager import validate_endpoint_url
+    from tessera.webhooks.webhook_manager import validate_endpoint_url
 
     assert validate_endpoint_url("https://93.184.216.34/hook", env="development")
 
@@ -55,9 +55,9 @@ def test_webhook_public_address_allowed() -> None:
 # -- NEW-5: OIDC ID-token validation requires a configured issuer -------------
 
 async def test_oidc_validate_id_token_requires_issuer() -> None:
-    from authy_package.cache.memory_cache import InMemoryCache
-    from authy_package.db.memory import InMemoryDatabase
-    from authy_package.oidc.oidc_manager import OIDCConfig, OIDCManager
+    from tessera.cache.memory_cache import InMemoryCache
+    from tessera.db.memory import InMemoryDatabase
+    from tessera.oidc.oidc_manager import OIDCConfig, OIDCManager
 
     db = InMemoryDatabase()
     await db.connect()
@@ -73,8 +73,8 @@ async def test_oidc_validate_id_token_requires_issuer() -> None:
 
 async def test_signed_assertion_replay_in_fresh_response_rejected():
     import test_saml as ts
-    from authy_package.cache.memory_cache import InMemoryCache
-    from authy_package.db.memory import InMemoryDatabase
+    from tessera.cache.memory_cache import InMemoryCache
+    from tessera.db.memory import InMemoryDatabase
 
     db = InMemoryDatabase()
     await db.connect()

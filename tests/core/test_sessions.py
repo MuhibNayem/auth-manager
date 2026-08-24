@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from authy_package.sessions.session_manager import (
+from tessera.sessions.session_manager import (
     SESSION_KEY_TEMPLATE,
     USER_SESSIONS_KEY_TEMPLATE,
     Session,

@@ -4,12 +4,12 @@ from __future__ import annotations
 
 import pytest
 
-from authy_package.password_security import (
+from tessera.password_security import (
     HibpProvider,
     PasswordPolicy,
     PasswordSecurityManager,
 )
-from authy_package.password_security.password_validator import (
+from tessera.password_security.password_validator import (
     COMMON_PASSWORDS_TOP1000,
 )
 

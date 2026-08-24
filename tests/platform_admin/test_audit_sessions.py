@@ -7,7 +7,7 @@ import io
 
 import pytest
 
-from authy_package.admin.audit_logger import EventType
+from tessera.admin.audit_logger import EventType
 
 
 @pytest.mark.asyncio
@@ -107,7 +107,7 @@ async def test_session_listing_and_revocation(client, admin_headers, admin_user)
 @pytest.mark.asyncio
 async def test_audit_logger_queue_flushes_on_close(db):
     """Queued (non-sync) events are persisted by close()."""
-    from authy_package.admin.audit_logger import AuditLogger
+    from tessera.admin.audit_logger import AuditLogger
 
     audit = AuditLogger(db, flush_interval_seconds=60)
     await audit.log(EventType.LOGOUT, "User logged out", actor_id="u-1")

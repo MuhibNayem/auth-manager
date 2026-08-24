@@ -1,11 +1,11 @@
-"""``authy config`` CLI tests — roundtrip persistence with 0600 perms."""
+"""``tessera config`` CLI tests — roundtrip persistence with 0600 perms."""
 
 from __future__ import annotations
 
 import json
 import stat
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 
 def test_config_set_get_roundtrip(runner, tmp_path):

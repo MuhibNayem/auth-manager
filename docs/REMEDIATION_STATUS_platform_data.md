@@ -1,6 +1,6 @@
 # Remediation Status — platform-data (database adapters)
 
-Workstream: **platform-data** (`authy_package/db/*` adapters + `tests/platform_data`).
+Workstream: **platform-data** (`tessera/db/*` adapters + `tests/platform_data`).
 Contract: `docs/CONTRACTS.md` §4 (unified async `AbstractDatabase`).
 Branch state verified against frozen foundation files (`db/__init__.py`,
 `db/abstract_db.py`, `db/memory.py`, `db/enterprise_utils.py` — untouched).
@@ -9,13 +9,13 @@ Branch state verified against frozen foundation files (`db/__init__.py`,
 
 ### Deleted (contract decision: fake stubs removed)
 
-- `authy_package/db/redis_adapter.py` — was a `pass`-body stub importing a
+- `tessera/db/redis_adapter.py` — was a `pass`-body stub importing a
   non-existent `enterprise_abstract` module. Removed; `get_database()`
   raises `ConfigError` for `db_type="redis"`.
-- `authy_package/db/cassandra_adapter.py` — same. Removed; `ConfigError`
+- `tessera/db/cassandra_adapter.py` — same. Removed; `ConfigError`
   for `db_type="cassandra"`.
 
-### Rewritten: `authy_package/db/sql.py` → `SQLDatabase(AbstractDatabase)`
+### Rewritten: `tessera/db/sql.py` → `SQLDatabase(AbstractDatabase)`
 
 Full §4 surface on SQLAlchemy 2.x async (declarative `Mapped` models;
 asyncpg/aiomysql usable via URL, aiosqlite for tests/dev):
@@ -55,7 +55,7 @@ asyncpg/aiomysql usable via URL, aiosqlite for tests/dev):
   (microsecond-normalized so lexicographic == chronological).
 - In-memory SQLite URLs use `StaticPool` (single shared connection).
 
-### Rewritten: `authy_package/db/mongodb.py` → `MongoDB(AbstractDatabase)`
+### Rewritten: `tessera/db/mongodb.py` → `MongoDB(AbstractDatabase)`
 
 Full §4 surface on motor:
 
@@ -82,7 +82,7 @@ Full §4 surface on motor:
 - Lazy client (constructor is import-safe/param-free of I/O); guarded
   `MOTOR_AVAILABLE` import with informative `ImportError`.
 
-### Fixed/re-based: `authy_package/db/dynamodb_adapter.py` → `DynamoDBAdapter(AbstractDatabase)`
+### Fixed/re-based: `tessera/db/dynamodb_adapter.py` → `DynamoDBAdapter(AbstractDatabase)`
 
 Now implements the FULL §4 contract (was: legacy
 `EnterpriseDatabaseAdapter` surface importing a module that no longer
@@ -171,7 +171,7 @@ Everything else is served by direct keys or GSI queries.
   — **green: 365 passed** (140 platform_data cases — 82 test functions
   expanded by the memory/sql-sqlite parametrization and the removed-db_type
   parametrization — plus the 225 foundation tests), exit code 0.
-- `./.venv/bin/python -m compileall authy_package` — clean (exit 0).
+- `./.venv/bin/python -m compileall tessera` — clean (exit 0).
 - Adapters additionally smoke-verified: SQLDatabase end-to-end on
   sqlite+aiosqlite (users/sessions races/audit chain/SAML races/OIDC
   whitelist); DynamoDBAdapter concrete (no remaining abstract methods)

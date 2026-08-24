@@ -3,9 +3,9 @@
 Requires MongoDB + Redis and provider credentials, all from the
 environment (nothing hardcoded):
 
-    pip install "authy-package[mongodb]"
+    pip install "tessera[mongodb]"
 
-    AUTHY_JWT_SECRET / AUTHY_DB_URL / AUTHY_DB_NAME / AUTHY_REDIS_URL
+    TESSERA_JWT_SECRET / TESSERA_DB_URL / TESSERA_DB_NAME / TESSERA_REDIS_URL
 
     GOOGLE_CLIENT_SECRETS_FILE   OAuth client-secrets JSON path
     GOOGLE_REDIRECT_URI          e.g. https://app.example.com/auth/google/callback
@@ -16,7 +16,7 @@ environment (nothing hardcoded):
 Authorization codes arrive from your frontend callback; pass the one you
 want to exercise via the matching env var:
 
-    AUTHY_GOOGLE_CODE / AUTHY_GITHUB_CODE / AUTHY_FACEBOOK_CODE / AUTHY_APPLE_CODE
+    TESSERA_GOOGLE_CODE / TESSERA_GITHUB_CODE / TESSERA_FACEBOOK_CODE / TESSERA_APPLE_CODE
 
 Every block that lacks configuration is skipped with a clear message —
 there is no pseudocode in this example. Accounts are only linked to
@@ -34,22 +34,22 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
-os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-os.environ.setdefault("AUTHY_ENV", "development")
-os.environ.setdefault("AUTHY_DB_TYPE", "mongodb")
+os.environ.setdefault("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+os.environ.setdefault("TESSERA_ENV", "development")
+os.environ.setdefault("TESSERA_DB_TYPE", "mongodb")
 
-from authy_package.cache.redis_cache import RedisCache    # noqa: E402
-from authy_package.config import AuthConfig               # noqa: E402
-from authy_package.core.auth_manager import (             # noqa: E402
+from tessera.cache.redis_cache import RedisCache    # noqa: E402
+from tessera.config import AuthConfig               # noqa: E402
+from tessera.core.auth_manager import (             # noqa: E402
     SocialAuthManager,
 )
-from authy_package.db.mongodb import MongoDB              # noqa: E402
-from authy_package.errors import AuthyError               # noqa: E402
-from authy_package.mfa.mfa_setup import MFAAuthManager    # noqa: E402
-from authy_package.social.apple import AppleManager       # noqa: E402
-from authy_package.social.facebook import FacebookManager  # noqa: E402
-from authy_package.social.github import GitHubManager     # noqa: E402
-from authy_package.social.google import GoogleManager     # noqa: E402
+from tessera.db.mongodb import MongoDB              # noqa: E402
+from tessera.errors import TesseraError               # noqa: E402
+from tessera.mfa.mfa_setup import MFAAuthManager    # noqa: E402
+from tessera.social.apple import AppleManager       # noqa: E402
+from tessera.social.facebook import FacebookManager  # noqa: E402
+from tessera.social.github import GitHubManager     # noqa: E402
+from tessera.social.google import GoogleManager     # noqa: E402
 
 
 def build_providers() -> dict:
@@ -112,7 +112,7 @@ async def run_login(auth_manager: SocialAuthManager, provider: str, code: str) -
             return None
         print(f"{provider} login: user={response['user'].get('email')}")
         return response
-    except AuthyError as exc:
+    except TesseraError as exc:
         print(f"{provider} login error: {exc}")
         return None
 
@@ -123,11 +123,11 @@ async def main() -> None:
 
     db = MongoDB(
         {
-            "url": os.environ["AUTHY_DB_URL"],
-            "db_name": os.environ.get("AUTHY_DB_NAME", "authy_db"),
+            "url": os.environ["TESSERA_DB_URL"],
+            "db_name": os.environ.get("TESSERA_DB_NAME", "tessera_db"),
         }
     )
-    cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
+    cache = RedisCache(os.environ.get("TESSERA_REDIS_URL", "redis://localhost:6379"))
     await db.connect()
 
     try:
@@ -153,9 +153,9 @@ async def main() -> None:
             if provider not in providers:
                 print(f"[skip] {provider}: credentials not configured")
                 continue
-            code = os.environ.get(f"AUTHY_{provider.upper()}_CODE")
+            code = os.environ.get(f"TESSERA_{provider.upper()}_CODE")
             if not code:
-                print(f"[skip] {provider}: no AUTHY_{provider.upper()}_CODE to exchange")
+                print(f"[skip] {provider}: no TESSERA_{provider.upper()}_CODE to exchange")
                 continue
             login_response = await run_login(auth_manager, provider, code) or login_response
 
@@ -178,7 +178,7 @@ async def main() -> None:
                     provider="google", refresh_token=provider_refresh, user=user
                 )
                 print("Provider token refreshed:", sorted(refreshed.keys()))
-            except AuthyError as exc:
+            except TesseraError as exc:
                 print("Provider token refresh error:", exc)
 
         # Enroll MFA for the social user: begin -> confirm with a real code.
@@ -189,7 +189,7 @@ async def main() -> None:
             code = pyotp.TOTP(pending["mfa_secret"]).now()
             confirmed = await auth_manager.confirm_mfa(code, email=user_identifier)
             print("MFA confirmed for", user_identifier, "-", confirmed.get("message"))
-        except AuthyError as exc:
+        except TesseraError as exc:
             print("MFA error:", exc)
 
         # Logout (revokes provider tokens where supported).

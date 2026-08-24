@@ -4,7 +4,7 @@ Guards the fixes for:
 - double-prefixed admin URLs (/admin/api/v1 + /admin/v2),
 - the RBAC v2 client + required scope_type query param,
 - the real admin login flow ({username_or_email, password} ->
-  /admin/api/v1/auth/login, token stored as authy_admin_token),
+  /admin/api/v1/auth/login, token stored as tessera_admin_token),
 - ProtectedRoute doing a real token presence + expiry check,
 - Enterprise features being reachable and actually wired.
 """
@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-DASHBOARD = REPO_ROOT / "authy_package" / "ui_kits" / "react" / "admin-dashboard"
+DASHBOARD = REPO_ROOT / "tessera" / "ui_kits" / "react" / "admin-dashboard"
 SRC = DASHBOARD / "src"
 
 
@@ -118,11 +118,11 @@ def test_login_page_posts_real_credentials():
 
 def test_token_key_consistent_across_dashboard():
     auth = read("lib/auth.ts")
-    assert "ADMIN_TOKEN_KEY = 'authy_admin_token'" in auth
+    assert "ADMIN_TOKEN_KEY = 'tessera_admin_token'" in auth
     # No legacy/divergent storage keys anywhere in the dashboard source.
     combined = all_source_text()
     assert "'access_token'" not in combined and '"access_token"' not in combined, (
-        "found a divergent token storage key; must be authy_admin_token"
+        "found a divergent token storage key; must be tessera_admin_token"
     )
     # The store and api layer must go through the shared helpers/key.
     store = read("store/index.ts")

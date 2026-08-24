@@ -8,15 +8,15 @@ import time
 
 import pytest
 
-from authy_package.cache import InMemoryCache
-from authy_package.sms import (
+from tessera.cache import InMemoryCache
+from tessera.sms import (
     InvalidVerificationCodeError,
     SMSManager,
     SMSProviderError,
     TooManyAttemptsError,
     VerificationCodeExpiredError,
 )
-from authy_package.sms.abstract_provider import (
+from tessera.sms.abstract_provider import (
     AbstractSMSProvider,
     SMSResponse,
 )
@@ -110,11 +110,11 @@ async def test_send_and_verify_ok(provider, cache):
 
 
 async def test_state_stored_hashed_under_contract_key(provider, cache):
-    """§3.1: authy:sms:{phone} json with code_hash/attempts/expires_at."""
+    """§3.1: tessera:sms:{phone} json with code_hash/attempts/expires_at."""
     manager = make_manager(provider, cache)
     await manager.send_verification_code(PHONE)
 
-    record = await cache.get_json(f"authy:sms:{PHONE}")
+    record = await cache.get_json(f"tessera:sms:{PHONE}")
     assert record is not None
     assert set(record) >= {"code_hash", "attempts", "expires_at", "last_sent_at"}
     # The plaintext code must never be persisted.
@@ -124,7 +124,7 @@ async def test_state_stored_hashed_under_contract_key(provider, cache):
     wrong = "0" * 6 if provider.last_code != "0" * 6 else "1" * 6
     with pytest.raises(InvalidVerificationCodeError):
         await manager.verify_code(PHONE, wrong)
-    record = await cache.get_json(f"authy:sms:{PHONE}")
+    record = await cache.get_json(f"tessera:sms:{PHONE}")
     assert record["attempts"] == 1
 
 
@@ -152,7 +152,7 @@ async def test_code_expiry_from_config(provider, cache):
     await manager.send_verification_code(PHONE)
 
     # Force the record past its expiry without sleeping.
-    key = f"authy:sms:{PHONE}"
+    key = f"tessera:sms:{PHONE}"
     record = await cache.get_json(key)
     record["expires_at"] = time.time() - 1
     await cache.set_json(key, record, ttl_seconds=300)
@@ -180,7 +180,7 @@ async def test_send_rate_limit_window_is_fixed(provider, cache):
     manager = make_manager(provider, cache, max_sends_per_window=2)
 
     await manager.send_verification_code(PHONE)
-    counter_key = f"authy:ratelimit:sms:{PHONE}"
+    counter_key = f"tessera:ratelimit:sms:{PHONE}"
     ttl_after_first = await cache.ttl(counter_key)
     assert 0 < ttl_after_first <= 60
 
@@ -204,7 +204,7 @@ async def test_rate_limit_window_reopens(provider, cache):
         await manager.send_verification_code(PHONE)
 
     # Simulate window expiry by deleting the counter (TTL-driven in prod).
-    await cache.delete(f"authy:ratelimit:sms:{PHONE}")
+    await cache.delete(f"tessera:ratelimit:sms:{PHONE}")
     result = await manager.send_verification_code(PHONE)
     assert result["success"] is True
 
@@ -221,7 +221,7 @@ async def test_provider_failure_passthrough(provider, cache):
     assert result["success"] is False
     assert "upstream 503" in result["error"]
     # No verification state may exist after a failed send.
-    assert await cache.get(f"authy:sms:{PHONE}") is None
+    assert await cache.get(f"tessera:sms:{PHONE}") is None
 
 
 async def test_delivery_status_passthrough(provider, cache):

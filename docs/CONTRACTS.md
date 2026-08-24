@@ -1,4 +1,4 @@
-# authy_package — Canonical Architecture Contracts (SOTA remediation)
+# tessera — Canonical Architecture Contracts (SOTA remediation)
 
 Status: BINDING SPEC. All remediation work implements against these contracts.
 Owner: architecture (parent-maintained). Changes require updating this file first.
@@ -7,12 +7,12 @@ Owner: architecture (parent-maintained). Changes require updating this file firs
 
 1. All I/O-bound public APIs are `async`. No sync/async mixing within one contract.
 2. Errors: raise typed exceptions (`ValueError` for input, `PermissionError` for authz,
-   `authy_package.errors.AuthyError` hierarchy for domain errors). Never bare `Exception`.
+   `tessera.errors.TesseraError` hierarchy for domain errors). Never bare `Exception`.
 3. Secrets/tokens/challenges/IDs: `secrets.token_urlsafe(n)` / `secrets.token_hex(n)` only.
    Never `random`, never time-seeded hashes.
 4. All secret comparisons: `hmac.compare_digest`.
 5. Datetimes: timezone-aware `datetime.now(timezone.utc)`. `datetime.utcnow()` is banned.
-6. Logging via `logging.getLogger("authy.<module>")`. No `print()` in library code (CLI
+6. Logging via `logging.getLogger("tessera.<module>")`. No `print()` in library code (CLI
    user-facing output uses `rich` only).
 7. Full type hints on public functions; concise docstrings.
 8. No hardcoded credentials/URLs; everything configurable via `AuthConfig` / env.
@@ -21,19 +21,19 @@ Owner: architecture (parent-maintained). Changes require updating this file firs
 10. Tests: every fixed/implemented behavior gets pytest coverage under `tests/<area>/`
     using the in-memory fakes; no external services required.
 
-## 1. Errors module — authy_package/errors.py (NEW, owned by foundation)
+## 1. Errors module — tessera/errors.py (NEW, owned by foundation)
 
 ```python
-class AuthyError(Exception): ...            # base, carries .code: str, .message
-class ConfigError(AuthyError): ...          # invalid/missing config
-class AuthenticationError(AuthyError): ...  # bad credentials/token
-class AuthorizationError(AuthyError): ...   # insufficient permissions
-class RateLimitError(AuthyError): ...       # carries .retry_after: int
-class NotFoundError(AuthyError): ...
-class IntegrityError(AuthyError): ...       # duplicate/foreign-key style
-class ProviderError(AuthyError): ...        # upstream provider failure
-class DatabaseError(AuthyError): ...        # persistence failure
-class TokenError(AuthyError): ...           # expired/invalid/wrong-type token
+class TesseraError(Exception): ...            # base, carries .code: str, .message
+class ConfigError(TesseraError): ...          # invalid/missing config
+class AuthenticationError(TesseraError): ...  # bad credentials/token
+class AuthorizationError(TesseraError): ...   # insufficient permissions
+class RateLimitError(TesseraError): ...       # carries .retry_after: int
+class NotFoundError(TesseraError): ...
+class IntegrityError(TesseraError): ...       # duplicate/foreign-key style
+class ProviderError(TesseraError): ...        # upstream provider failure
+class DatabaseError(TesseraError): ...        # persistence failure
+class TokenError(TesseraError): ...           # expired/invalid/wrong-type token
 ```
 All existing call sites migrate to these. HTTP layers map them to status codes
 (400/401/403/404/409/429/500, 502 for ProviderError).
@@ -55,7 +55,7 @@ All existing call sites migrate to these. HTTP layers map them to status codes
   `reset_token_ttl_seconds: int = 900`, `base_url: str = "http://localhost:8000"`
 - passwordless: `magic_link_ttl_seconds: int = 600`,
   `default_redirect_url: str | None`, `auto_create_users: bool = False`,
-  `rp_id: str | None`, `rp_name: str = "Authy"`
+  `rp_id: str | None`, `rp_name: str = "Tessera"`
 - email: `email_provider: str = "mailjet"`, mailjet/sendgrid/ses keys as today
 - nested configs retained: database, cache, social, cognito, sms, bot_protection,
   password_security (existing dataclasses, extended as needed)
@@ -68,7 +68,7 @@ All existing call sites migrate to these. HTTP layers map them to status codes
 Password hashing: implement in `utils/security.py` with `bcrypt` library directly
 (passlib is removed project-wide). Argon2 optional via `argon2-cffi` when configured.
 
-## 3. AbstractCache — authy_package/cache/abstract_cache.py
+## 3. AbstractCache — tessera/cache/abstract_cache.py
 
 Async-first, generic primitives ONLY (token semantics live in consumers):
 
@@ -99,18 +99,18 @@ Old names (`RedisCaching`, `create_token_pair`, ...) are REMOVED; consumers use
 primitives with the key schema in §3.1. `cache/__init__.py` exports both classes.
 
 ### 3.1 Key schema (namespaces)
-- `authy:tokenpair:{user_id}` -> json {access_jti, refresh_jti} (optional)
-- `authy:refresh:{refresh_jti}` -> user_id ; `authy:access:{access_jti}` -> user_id
-- `authy:session:{session_id}` -> json Session ; `authy:user_sessions:{user_id}` -> set/list
-- `authy:magiclink:{token}` -> json ; `authy:passkey:reg:{user_id}` / `authy:passkey:auth:{challenge_key}`
-- `authy:oauth:state:{state}` -> json ; `authy:oauth:nonce:{nonce}`
-- `authy:saml:request:{request_id}` / `authy:saml:response:{response_id}` (replay ledgers)
-- `authy:ratelimit:{scope}:{id}` counter ; `authy:lockout:{identifier}`
-- `authy:sms:{phone}` code/state ; `authy:webhook:queue` list
-Refresh-token ROTATION: on refresh, old `authy:refresh:{jti}` is deleted atomically
+- `tessera:tokenpair:{user_id}` -> json {access_jti, refresh_jti} (optional)
+- `tessera:refresh:{refresh_jti}` -> user_id ; `tessera:access:{access_jti}` -> user_id
+- `tessera:session:{session_id}` -> json Session ; `tessera:user_sessions:{user_id}` -> set/list
+- `tessera:magiclink:{token}` -> json ; `tessera:passkey:reg:{user_id}` / `tessera:passkey:auth:{challenge_key}`
+- `tessera:oauth:state:{state}` -> json ; `tessera:oauth:nonce:{nonce}`
+- `tessera:saml:request:{request_id}` / `tessera:saml:response:{response_id}` (replay ledgers)
+- `tessera:ratelimit:{scope}:{id}` counter ; `tessera:lockout:{identifier}`
+- `tessera:sms:{phone}` code/state ; `tessera:webhook:queue` list
+Refresh-token ROTATION: on refresh, old `tessera:refresh:{jti}` is deleted atomically
 (delete-then-create, tolerate race by verifying old jti still exists before issuing).
 
-## 4. AbstractDatabase — authy_package/db/abstract_db.py
+## 4. AbstractDatabase — tessera/db/abstract_db.py
 
 Single unified async contract (replaces legacy AbstractDatabase + EnterpriseDatabaseAdapter;
 both old classes are REMOVED). All methods async; dict-based records with stable keys
@@ -269,7 +269,7 @@ hashed keys via db. Webhook test/delivery endpoints validate URL safety (§7).
   metadata ranges (use `ipaddress` on all resolved A/AAAA records); reject redirects to
   disallowed hosts (max_redirects=0 by default).
 - Signatures: HMAC-SHA256 over `f"{timestamp}.{canonical_json_bytes}"`, header
-  `X-Authy-Signature: sha256=<hex>`, `X-Authy-Timestamp`, `X-Authy-Event`, `X-Authy-Delivery-Id`;
+  `X-Tessera-Signature: sha256=<hex>`, `X-Tessera-Timestamp`, `X-Tessera-Event`, `X-Tessera-Delivery-Id`;
   receiver helper verifies with `hmac.compare_digest`, ±300s window, delivery-id replay store.
 - Delivery: any non-2xx = failure → schedule retry per `[60,300,900,3600,14400]`;
   `_process_pending_events` MUST honor `scheduled_for`.
@@ -281,7 +281,7 @@ hashed keys via db. Webhook test/delivery endpoints validate URL safety (§7).
 ## 8. Admin v2 (enterprise) — real implementations (platform-admin)
 
 - API keys: create returns plaintext ONCE; store sha256 hash + scopes + expiry; middleware
-  validates `Authorization: Bearer authy_ak_...` against db on every /admin/v2 route.
+  validates `Authorization: Bearer tessera_ak_...` against db on every /admin/v2 route.
 - Branding/localization/settings: persisted via db settings kv.
 - Reports: real CSV/JSON generated from users/audit data via db contract; job ids are
   `secrets.token_hex(8)`; no fake sleeps beyond real work.
@@ -294,19 +294,19 @@ hashed keys via db. Webhook test/delivery endpoints validate URL safety (§7).
 
 ## 9. CLI (platform-services)
 
-- `authy init`: fix templates (real import paths `authy_package.frameworks.*`, no
+- `tessera init`: fix templates (real import paths `tessera.frameworks.*`, no
   placeholder secrets — generate `secrets.token_urlsafe(48)` into scaffolded .env,
   valid Jinja-free config).
-- `authy dev`: keep; restrict static fallback to 127.0.0.1.
-- `authy doctor`: REAL checks — python version, import probes, DB/Redis connectivity via
+- `tessera dev`: keep; restrict static fallback to 127.0.0.1.
+- `tessera doctor`: REAL checks — python version, import probes, DB/Redis connectivity via
   health_check(), config.validate(), report table honestly (✓/✗ with reasons).
-- `authy migrate`: REAL migrations against db contract: `schema_migrations` tracking via
-  db settings kv; migration modules from `authy_migrations/` dir; run/rollback/status
+- `tessera migrate`: REAL migrations against db contract: `schema_migrations` tracking via
+  db settings kv; migration modules from `tessera_migrations/` dir; run/rollback/status
   truthful output.
-- `authy users|audit|logs|config|webhooks`: implement against db/cache/config files
+- `tessera users|audit|logs|config|webhooks`: implement against db/cache/config files
   (`users list/get/delete` via db; `audit search/export` via db; `config show/set` on
-  `.authy.json` with 0600 perms; `webhooks list/create/test` via db + webhook manager).
-- `authy deploy`: Docker path implemented for real (build image via docker SDK/CLI, run);
+  `.tessera.json` with 0600 perms; `webhooks list/create/test` via db + webhook manager).
+- `tessera deploy`: Docker path implemented for real (build image via docker SDK/CLI, run);
   AWS/GCP/Azure/K8s paths generate IaC artifacts (CloudFormation/K8s manifests/compose)
   into `./deploy-out/` and say exactly that — no fake "deployed" output.
 - TUI dashboard: real metrics via db counts or honest "not connected".
@@ -318,19 +318,19 @@ hashed keys via db. Webhook test/delivery endpoints validate URL safety (§7).
 - Flask: single shared event loop per worker (module-level), not one loop per request;
   never leak raw exception text to clients.
 - Django: `require_auth`, `require_role`, `rate_limit`, `optional_auth` all present;
-  set `request.authy_user` (dict) WITHOUT clobbering `request.user`; middleware logs
+  set `request.tessera_user` (dict) WITHOUT clobbering `request.user`; middleware logs
   and re-raises auth errors (no bare `except: pass`).
 - All three expose identical decorator/dependency names and behavior (parity matrix tested).
 
 ## 11. Packaging & CI (docs/packaging workstream)
 
-- Single source of truth: root `pyproject.toml` (Poetry) renamed project `authy-package`,
-  version synced to `authy_package.__version__`, python `>=3.9,<4.0`, slim core deps
+- Single source of truth: root `pyproject.toml` (Poetry) renamed project `tessera`,
+  version synced to `tessera.__version__`, python `>=3.9,<4.0`, slim core deps
   (pyjwt, cryptography, bcrypt, httpx, aiohttp, click, rich, python-dotenv, redis) +
   extras: `fastapi`, `flask`, `django`, `postgresql`, `mongodb`, `dynamodb`, `saml`,
   `oidc`, `sms`, `captcha`, `webauthn`, `all`, `dev` (pytest, pytest-asyncio, ruff, mypy).
-- `authy_package/pyproject.toml` DELETED (one packaging config only); version bump
-  automation keeps `authy_package/__init__.py:__version__` as source.
+- `tessera/pyproject.toml` DELETED (one packaging config only); version bump
+  automation keeps `tessera/__init__.py:__version__` as source.
 - CI: on PR → ruff + mypy (lenient baseline ok) + full pytest matrix; on main/tag →
   publish with tests passed, fix bot guard, fix tag collision, actions v4.
 - README/RUNBOOK/reports reconciled to actual features; remove unverified metrics and
@@ -339,7 +339,7 @@ hashed keys via db. Webhook test/delivery endpoints validate URL safety (§7).
 
 ## 12. Definition of done (all workstreams)
 
-1. `python -m compileall authy_package` clean.
+1. `python -m compileall tessera` clean.
 2. `pytest tests/` green (InMemory fakes only; no network).
 3. No finding from the analysis remains unaddressed (fixed, or explicitly documented
    as out-of-scope with rationale in docs/REMEDIATION_STATUS.md maintained by each agent

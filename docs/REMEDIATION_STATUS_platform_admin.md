@@ -1,9 +1,9 @@
 # Remediation status — PLATFORM/ADMIN workstream
 
 Owner: `platform-admin-fix` (coder agent), branch `chorus/sota-auth-remediation`.
-Binding spec: `docs/CONTRACTS.md`. Scope: `authy_package/admin`,
-`authy_package/organizations`, `authy_package/webhooks`,
-`authy_package/frameworks`, `authy_package/cognito`, `tests/platform_admin`.
+Binding spec: `docs/CONTRACTS.md`. Scope: `tessera/admin`,
+`tessera/organizations`, `tessera/webhooks`,
+`tessera/frameworks`, `tessera/cognito`, `tests/platform_admin`.
 
 Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundation -q`
 → **exit 0, all tests pass (50 new platform_admin tests + foundation suite)**.
@@ -24,7 +24,7 @@ Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundatio
   audit events, identical error bodies for bad-user vs bad-password,
   admin-role gating (role or RBAC `admin:*` grant).
 - `POST /auth/refresh` implements §3.1 rotation: old
-  `authy:refresh:{jti}` verified + deleted before re-issue; replayed
+  `tessera:refresh:{jti}` verified + deleted before re-issue; replayed
   refresh tokens get 401.
 - User CRUD/search/bulk via `db.list_users/count_users/get_user_by_id/
   update_user/delete_user` with pagination totals; bulk bounded at 1000
@@ -44,12 +44,12 @@ Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundatio
   `cache.health_check()`.
 - The fake WebSocket endpoint was **removed** (no honest heartbeat
   implementation was warranted; UI kit does not require it).
-- AuthyError→HTTP mapping (§1) registered app-wide (401/403/404/409/429
+- TesseraError→HTTP mapping (§1) registered app-wide (401/403/404/409/429
   +Retry-After/502/500), plus ValueError→400, PermissionError→403.
 
 ## §8 — Admin v2 (`admin/dashboard_enterprise.py`, `admin/rbac_api.py`, `admin/rbac_manager.py`) — REAL
 
-- **API keys**: `authy_ak_` + `secrets.token_hex(32)`; plaintext returned
+- **API keys**: `tessera_ak_` + `secrets.token_hex(32)`; plaintext returned
   ONCE; only the sha256 hash is stored via `db.save_api_key`. Every
   `/admin/v2` route authenticates via `get_v2_principal` (API key or admin
   JWT). Revocation + expiry enforced. Scope enforcement via
@@ -114,14 +114,14 @@ Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundatio
   failure record + retry on `[60, 300, 900, 3600, 14400]`;
   `process_pending_events` honors `scheduled_for` (regression-tested).
 - Signatures exactly per §7: HMAC-SHA256 over
-  `f"{timestamp}.{canonical_json}"`, headers `X-Authy-Signature:
-  sha256=<hex>`, `X-Authy-Timestamp`, `X-Authy-Event`,
-  `X-Authy-Delivery-Id`; receiver-side static
+  `f"{timestamp}.{canonical_json}"`, headers `X-Tessera-Signature:
+  sha256=<hex>`, `X-Tessera-Timestamp`, `X-Tessera-Event`,
+  `X-Tessera-Delivery-Id`; receiver-side static
   `verify_webhook_signature` (compare_digest, ±300s, delivery-id replay
   store via cache).
 - Secrets `secrets.token_hex(32)`; shown once at registration/rotation;
   list/get mask all but last 4. `events=[]` = subscribe-all (documented +
-  implemented). Persistence via db webhook methods + `authy:webhook:queue`
+  implemented). Persistence via db webhook methods + `tessera:webhook:queue`
   cache list.
 
 ## §10 — Framework adapters (`frameworks/`) — FIXED
@@ -129,13 +129,13 @@ Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundatio
 - FastAPI: `require_auth` is a proper dependency using
   `Depends(HTTPBearer(auto_error=False))` (the missing-`Depends` defect is
   gone); `require_role`, `require_org_membership`, `optional_auth`,
-  `rate_limit` via cache (§3.1 keys); AuthyError→HTTPException mapping +
+  `rate_limit` via cache (§3.1 keys); TesseraError→HTTPException mapping +
   installable handlers.
 - Flask: ONE module-level event loop reused across requests, driven via
   lock-guarded `loop.run_until_complete`; sync decorators; error bodies
   carry only stable codes + generic messages (never `str(e)`).
 - Django: `require_auth`, `require_role`, `rate_limit`, `optional_auth`
-  all present; sets `request.authy_user` and NEVER touches `request.user`;
+  all present; sets `request.tessera_user` and NEVER touches `request.user`;
   middleware logs + propagates auth errors (bare `except: pass` removed),
   with a `set_auth_manager()` registry instead of `get_auth()` guessing.
 - Identical decorator/dependency names and behavior across adapters;
@@ -151,7 +151,7 @@ Verification: `./.venv/bin/python -m pytest tests/platform_admin tests/foundatio
 - `authenticate_user` uses USER_SRP_AUTH with a minimal, secrets-safe
   SRP-6a implementation (RFC 5054 3072-bit group, HKDF "Caldera Derived
   Key", SECRET_HASH support) — no plaintext-password flow.
-- All errors raised as AuthyError subclasses (AuthenticationError /
+- All errors raised as TesseraError subclasses (AuthenticationError /
   RateLimitError / ProviderError) — never `{"Error": str(e)}` dicts.
 - TOTP: associate software token FIRST, then set preference (optional
   verification step when a code is provided).

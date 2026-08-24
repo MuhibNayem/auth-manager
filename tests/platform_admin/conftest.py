@@ -16,16 +16,16 @@ import pytest
 import pytest_asyncio
 from fastapi import FastAPI
 
-from authy_package.admin.audit_logger import AuditLogger
-from authy_package.admin.dashboard_api import create_admin_app
-from authy_package.admin.deps import AdminDependencies
-from authy_package.admin.rbac_manager import RBACManager
-from authy_package.cache import InMemoryCache
-from authy_package.config import AuthConfig, CacheConfig, DatabaseConfig
-from authy_package.db import InMemoryDatabase
-from authy_package.organizations.org_manager import OrganizationManager
-from authy_package.utils.security import JWTTokenManager, hash_password
-from authy_package.webhooks.webhook_manager import WebhookManager
+from tessera.admin.audit_logger import AuditLogger
+from tessera.admin.dashboard_api import create_admin_app
+from tessera.admin.deps import AdminDependencies
+from tessera.admin.rbac_manager import RBACManager
+from tessera.cache import InMemoryCache
+from tessera.config import AuthConfig, CacheConfig, DatabaseConfig
+from tessera.db import InMemoryDatabase
+from tessera.organizations.org_manager import OrganizationManager
+from tessera.utils.security import JWTTokenManager, hash_password
+from tessera.webhooks.webhook_manager import WebhookManager
 
 ADMIN_EMAIL = "admin@example.com"
 ADMIN_PASSWORD = "Adm1n!Passw0rd"

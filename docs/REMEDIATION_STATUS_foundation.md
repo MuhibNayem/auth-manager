@@ -4,9 +4,9 @@ Owner: `foundation-contracts` (coder agent), branch `chorus/sota-auth-remediatio
 Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
 `tests/foundation/`.
 
-## §1 — Errors module (`authy_package/errors.py`, NEW)
+## §1 — Errors module (`tessera/errors.py`, NEW)
 
-- Implemented the full `AuthyError` hierarchy exactly as specified:
+- Implemented the full `TesseraError` hierarchy exactly as specified:
   `ConfigError`, `AuthenticationError`, `AuthorizationError`, `RateLimitError`,
   `NotFoundError`, `IntegrityError`, `ProviderError`, `DatabaseError`,
   `TokenError`.
@@ -16,7 +16,7 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
   `to_dict()` for HTTP mapping (429).
 - `to_dict()` provided on the base for uniform API error bodies.
 
-## §2 — AuthConfig (`authy_package/config.py`, REWRITTEN)
+## §2 — AuthConfig (`tessera/config.py`, REWRITTEN)
 
 - Kept the dataclass-tree style; all flat canonical attributes added directly
   on `AuthConfig`: `env`, `jwt_secret`, `jwt_algorithm`,
@@ -39,22 +39,22 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
   `"your-secret-key-change-in-production"` is deleted; that string is now
   only referenced as `PUBLIC_DEFAULT_JWT_SECRET` so `validate()` can reject
   it explicitly.
-- `from_env()` preserves every legacy `AUTHY_*` name (AUTHY_DB_TYPE,
-  AUTHY_DB_URL, AUTHY_DB_NAME, AUTHY_DB_COLLECTION, AUTHY_CACHE_ENABLED,
-  AUTHY_REDIS_URL, AUTHY_TOKEN_EXPIRATION, AUTHY_REFRESH_TOKEN_EXPIRATION,
-  AUTHY_JWT_SECRET, AUTHY_RATE_LIMIT_ENABLED, AUTHY_RATE_LIMIT_MAX_ATTEMPTS,
-  AUTHY_COGNITO_ENABLED, AUTHY_EMAIL_ENABLED, AUTHY_SMS_*,
-  AUTHY_BOT_PROTECTION_ENABLED, AUTHY_CAPTCHA_PROVIDER,
-  AUTHY_MAX_REQUESTS_PER_*, AUTHY_PASSWORD_*, MAILJET_API_KEY/SECRET,
-  SENDER_EMAIL/SENDER_NAME, provider vars) and adds new `AUTHY_*` vars for
-  the new fields (AUTHY_ENV, AUTHY_JWT_ALGORITHM/ISSUER/AUDIENCE/
-  CLOCK_SKEW_SECONDS, AUTHY_SESSION_EXPIRY_SECONDS,
-  AUTHY_MAX_CONCURRENT_SESSIONS, AUTHY_REVOKE_SESSIONS_ON_PASSWORD_CHANGE,
-  AUTHY_RATE_LIMIT_WINDOW_SECONDS, AUTHY_ACCOUNT_LOCKOUT_DURATION_SECONDS,
-  AUTHY_MFA_REQUIRED, AUTHY_PASSWORD_HASH_ALGORITHM, AUTHY_BCRYPT_ROUNDS,
-  AUTHY_RESET_TOKEN_TTL_SECONDS, AUTHY_BASE_URL, AUTHY_MAGIC_LINK_TTL_SECONDS,
-  AUTHY_DEFAULT_REDIRECT_URL, AUTHY_AUTO_CREATE_USERS, AUTHY_RP_ID,
-  AUTHY_RP_NAME, AUTHY_REFRESH_TOKEN_TTL_DAYS, AUTHY_EMAIL_PROVIDER,
+- `from_env()` preserves every legacy `TESSERA_*` name (TESSERA_DB_TYPE,
+  TESSERA_DB_URL, TESSERA_DB_NAME, TESSERA_DB_COLLECTION, TESSERA_CACHE_ENABLED,
+  TESSERA_REDIS_URL, TESSERA_TOKEN_EXPIRATION, TESSERA_REFRESH_TOKEN_EXPIRATION,
+  TESSERA_JWT_SECRET, TESSERA_RATE_LIMIT_ENABLED, TESSERA_RATE_LIMIT_MAX_ATTEMPTS,
+  TESSERA_COGNITO_ENABLED, TESSERA_EMAIL_ENABLED, TESSERA_SMS_*,
+  TESSERA_BOT_PROTECTION_ENABLED, TESSERA_CAPTCHA_PROVIDER,
+  TESSERA_MAX_REQUESTS_PER_*, TESSERA_PASSWORD_*, MAILJET_API_KEY/SECRET,
+  SENDER_EMAIL/SENDER_NAME, provider vars) and adds new `TESSERA_*` vars for
+  the new fields (TESSERA_ENV, TESSERA_JWT_ALGORITHM/ISSUER/AUDIENCE/
+  CLOCK_SKEW_SECONDS, TESSERA_SESSION_EXPIRY_SECONDS,
+  TESSERA_MAX_CONCURRENT_SESSIONS, TESSERA_REVOKE_SESSIONS_ON_PASSWORD_CHANGE,
+  TESSERA_RATE_LIMIT_WINDOW_SECONDS, TESSERA_ACCOUNT_LOCKOUT_DURATION_SECONDS,
+  TESSERA_MFA_REQUIRED, TESSERA_PASSWORD_HASH_ALGORITHM, TESSERA_BCRYPT_ROUNDS,
+  TESSERA_RESET_TOKEN_TTL_SECONDS, TESSERA_BASE_URL, TESSERA_MAGIC_LINK_TTL_SECONDS,
+  TESSERA_DEFAULT_REDIRECT_URL, TESSERA_AUTO_CREATE_USERS, TESSERA_RP_ID,
+  TESSERA_RP_NAME, TESSERA_REFRESH_TOKEN_TTL_DAYS, TESSERA_EMAIL_PROVIDER,
   SENDGRID_API_KEY, SES_*). Malformed int env values raise `ConfigError`.
 - `validate()` raises `ConfigError` when: jwt_secret is None/empty, equals
   the public default string, or is placeholder-like; `env` invalid;
@@ -64,10 +64,10 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
   `base_url` not http(s); production with http base_url (HTTPS enforced per
   §6); production with placeholder secrets, `example.com` URLs or sender.
 - Deviation note: `get_auth()`/`init_auth()` (must call `validate()` per §2)
-  live in `authy_package/__init__.py` / core workstream files, which are NOT
+  live in `tessera/__init__.py` / core workstream files, which are NOT
   foundation-owned; they must call `config.validate()` in Wave-2 core-auth.
 
-## §3 / §3.1 — Cache (`authy_package/cache/`, REWRITTEN)
+## §3 / §3.1 — Cache (`tessera/cache/`, REWRITTEN)
 
 - `abstract_cache.py`: exactly the listed async primitives (`get`, `set`,
   `set_json`, `get_json`, `delete`, `exists`, `incr`, `expire`, `ttl`,
@@ -88,7 +88,7 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
   §3.1 key schema (constants for login rate-limit/lockout/reset keys are
   exported from `utils/security.py`).
 
-## §4 — Database (`authy_package/db/`, REWRITTEN)
+## §4 — Database (`tessera/db/`, REWRITTEN)
 
 - `abstract_db.py`: the EXACT unified async contract from §4 (legacy
   `AbstractDatabase` body replaced; `EnterpriseDatabaseAdapter` gone).
@@ -96,7 +96,7 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
   on the abstract methods.
 - `enterprise_abstract.py`: DELETED (preferred over a shim per task
   instruction). Its legacy exception classes are superseded by
-  `authy_package.errors`.
+  `tessera.errors`.
 - `memory.py`: `InMemoryDatabase` implementing the FULL §4 surface:
   - users: case-insensitive email/username indexes (phone exact), unique
     identifier enforcement (`IntegrityError`), immutable `id`/`created_at`,
@@ -134,19 +134,19 @@ Binding spec: `docs/CONTRACTS.md`. Scope: §1–§6 foundation-owned files plus
     enforces an explicit whitelist (`OIDC_UPDATABLE_FIELDS`); non-whitelisted
     keys raise `ValueError`; issuer/slug changes reindex.
 - `enterprise_utils.py`: KEPT and FIXED — `RetryConfig.retryable_exceptions`
-  default is now `(DatabaseError, TimeoutError)` from `authy_package.errors`
+  default is now `(DatabaseError, TimeoutError)` from `tessera.errors`
   (NOT the builtin `ConnectionError`); circuit breaker OPEN state raises
   `DatabaseError(code="circuit_open")`; circuit timing uses
   `time.monotonic()`; retry jitter uses `random.SystemRandom()`;
   `ConnectionPool.health_check` executes `text("SELECT 1")` (lazy SQLAlchemy
   import, §0.9) with a raw-string fallback only when SQLAlchemy is absent;
   `CircuitBreaker`/`ObservabilityMixin` retained; logger renamed to
-  `authy.db.enterprise_utils` (§0.6).
+  `tessera.db.enterprise_utils` (§0.6).
 - `db/__init__.py`: exports `AbstractDatabase`, `InMemoryDatabase`,
   `get_database()`; `SQLDatabase`/`MongoDB`/`DynamoDBAdapter` resolve via
   PEP 562 module `__getattr__` with guarded `importlib` loads that raise an
   informative `ImportError` ("unavailable") instead of breaking
-  `import authy_package.db`. `get_database()` keys on
+  `import tessera.db`. `get_database()` keys on
   `DatabaseConfig.db_type` (`sql|mongodb|dynamodb|memory`, accepts either
   `AuthConfig` or `DatabaseConfig`) and raises `ConfigError` for unknown
   types. All Neo4j references removed. `MongoDBDatabase` kept as a lazy
@@ -161,7 +161,7 @@ Not foundation-owned (admin/platform workstreams). `JWTTokenManager`,
 `AbstractDatabase`, `AbstractCache`, and the error hierarchy needed by §5
 are provided by this workstream.
 
-## §6 — JWT / token contract (`authy_package/utils/security.py`, REWRITTEN)
+## §6 — JWT / token contract (`tessera/utils/security.py`, REWRITTEN)
 
 - passlib is gone; hashing uses the `bcrypt` library directly (explicit
   72-byte truncation, documented) with argon2-cffi lazily when
@@ -184,7 +184,7 @@ are provided by this workstream.
 - Rate limiting + lockout helpers (module-level, async):
   `enforce_login_rate_limit`, `record_login_failure`,
   `clear_login_failures` over cache counters
-  `authy:ratelimit:login:{identifier}` and `authy:lockout:{identifier}`
+  `tessera:ratelimit:login:{identifier}` and `tessera:lockout:{identifier}`
   (§3.1). Behavior: failures increment the counter (fixed window of
   `rate_limit_window_seconds`); at `rate_limit_max_attempts` a lockout
   marker is set for `account_lockout_duration_seconds` and the counter is
@@ -194,7 +194,7 @@ are provided by this workstream.
   Disabled rate limiting is a no-op.
 - Reset flow (`SecurityManager(db, cache, config)`): tokens via
   `secrets.token_urlsafe(32)`, stored ONLY as sha256 hashes under
-  `authy:reset:{token_hash}` with `config.reset_token_ttl_seconds`;
+  `tessera:reset:{token_hash}` with `config.reset_token_ttl_seconds`;
   single-use consume (get → compare_digest → delete); constant-time compare
   via `hmac.compare_digest`; link built from `config.base_url`
   (`{base_url}/auth/reset-password?token=...`); the raw token never appears
@@ -211,7 +211,7 @@ are provided by this workstream.
 ## §0 ground rules
 
 Applied throughout: async-only public APIs, full type hints, `logging`
-(`authy.<module>` loggers), `secrets` for tokens/ids, timezone-aware UTC
+(`tessera.<module>` loggers), `secrets` for tokens/ids, timezone-aware UTC
 datetimes (`datetime.utcnow` never used), `hmac.compare_digest` for secret
 comparisons, no `print`, lazy imports for optional deps, typed errors.
 
@@ -242,8 +242,8 @@ comparisons, no `print`, lazy imports for optional deps, typed errors.
 
 - `./.venv/bin/python -m pytest tests/foundation -q` — **201 passed, 0
   failed** (exit 0).
-- `./.venv/bin/python -m compileall authy_package/errors.py authy_package/config.py authy_package/utils authy_package/cache authy_package/db` — clean.
-- `./.venv/bin/python -c "import authy_package.db, authy_package.cache, authy_package.config, authy_package.errors"` — succeeds.
+- `./.venv/bin/python -m compileall tessera/errors.py tessera/config.py tessera/utils tessera/cache tessera/db` — clean.
+- `./.venv/bin/python -c "import tessera.db, tessera.cache, tessera.config, tessera.errors"` — succeeds.
 
 ## Deviations / notes (with justification)
 
@@ -262,7 +262,7 @@ comparisons, no `print`, lazy imports for optional deps, typed errors.
    stored for external verifiers.
 4. **`get_auth()`/`init_auth()` `validate()` call** (§2) is owed by the
    Wave-2 core-auth workstream (file outside foundation ownership).
-5. **Top-level package import resilience**: `authy_package/__init__.py`
+5. **Top-level package import resilience**: `tessera/__init__.py`
    still eagerly imports modules with heavy optional deps (cognito/social/
    framework adapters). Foundation's own subtree (`errors`, `config`,
    `utils`, `cache`, `db`) is import-safe per §0.9; the top-level lazy-import

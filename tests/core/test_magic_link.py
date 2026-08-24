@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from authy_package.errors import AuthenticationError, RateLimitError
-from authy_package.passwordless.magic_link import MagicLinkManager
+from tessera.errors import AuthenticationError, RateLimitError
+from tessera.passwordless.magic_link import MagicLinkManager
 
 EMAIL = "magic@example.com"
 

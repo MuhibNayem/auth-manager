@@ -6,8 +6,8 @@ import hashlib
 
 import pytest
 
-from authy_package.db.abstract_db import AbstractDatabase
-from authy_package.errors import IntegrityError
+from tessera.db.abstract_db import AbstractDatabase
+from tessera.errors import IntegrityError
 
 
 
@@ -110,7 +110,7 @@ class TestRBAC:
 
 class TestApiKeys:
     async def test_store_hash_only_and_revoke(self, db: AbstractDatabase) -> None:
-        key_hash = hashlib.sha256(b"authy_ak_secret-value").hexdigest()
+        key_hash = hashlib.sha256(b"tessera_ak_secret-value").hexdigest()
         record = await db.save_api_key(
             {"name": "ci-key", "key_hash": key_hash, "scopes": ["users:read"]}
         )
@@ -128,7 +128,7 @@ class TestApiKeys:
 
     async def test_validation(self, db: AbstractDatabase) -> None:
         with pytest.raises(ValueError, match="never"):
-            await db.save_api_key({"name": "bad", "key": "authy_ak_plaintext"})
+            await db.save_api_key({"name": "bad", "key": "tessera_ak_plaintext"})
         with pytest.raises(ValueError):
             await db.save_api_key({"name": "bad"})
         key_hash = hashlib.sha256(b"same-key").hexdigest()

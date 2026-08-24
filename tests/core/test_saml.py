@@ -13,10 +13,10 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 from lxml import etree
 
-from authy_package.cache import InMemoryCache
-from authy_package.db import InMemoryDatabase
-from authy_package.errors import ConfigError
-from authy_package.saml import SAMLConfig, SAMLManager
+from tessera.cache import InMemoryCache
+from tessera.db import InMemoryDatabase
+from tessera.errors import ConfigError
+from tessera.saml import SAMLConfig, SAMLManager
 
 SP_ENTITY_ID = "https://sp.example.com/metadata"
 ACS_URL = "https://sp.example.com/acs"

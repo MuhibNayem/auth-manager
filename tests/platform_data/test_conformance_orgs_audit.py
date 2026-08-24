@@ -6,10 +6,10 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from authy_package.db import InMemoryDatabase
-from authy_package.db.abstract_db import AbstractDatabase
-from authy_package.db.sql import SQLDatabase
-from authy_package.errors import IntegrityError
+from tessera.db import InMemoryDatabase
+from tessera.db.abstract_db import AbstractDatabase
+from tessera.db.sql import SQLDatabase
+from tessera.errors import IntegrityError
 
 
 
@@ -185,7 +185,7 @@ class TestAuditChain:
         elif isinstance(db, SQLDatabase):
             from sqlalchemy import update as sa_update
 
-            from authy_package.db.sql import _AuditEventModel
+            from tessera.db.sql import _AuditEventModel
 
             tampered_data = {
                 key: value

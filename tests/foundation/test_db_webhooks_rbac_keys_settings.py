@@ -6,8 +6,8 @@ import hashlib
 
 import pytest
 
-from authy_package.db import InMemoryDatabase
-from authy_package.errors import IntegrityError
+from tessera.db import InMemoryDatabase
+from tessera.errors import IntegrityError
 
 
 class TestWebhooks:
@@ -139,7 +139,7 @@ class TestRBAC:
 
 class TestApiKeys:
     async def test_store_hash_only(self, db: InMemoryDatabase) -> None:
-        plaintext = "authy_ak_secret-value"
+        plaintext = "tessera_ak_secret-value"
         key_hash = hashlib.sha256(plaintext.encode()).hexdigest()
         record = await db.save_api_key(
             {"name": "ci-key", "key_hash": key_hash, "scopes": ["users:read"]}
@@ -155,7 +155,7 @@ class TestApiKeys:
 
     async def test_plaintext_key_rejected(self, db: InMemoryDatabase) -> None:
         with pytest.raises(ValueError, match="never"):
-            await db.save_api_key({"name": "bad", "key": "authy_ak_plaintext"})
+            await db.save_api_key({"name": "bad", "key": "tessera_ak_plaintext"})
 
     async def test_missing_hash_rejected(self, db: InMemoryDatabase) -> None:
         with pytest.raises(ValueError):

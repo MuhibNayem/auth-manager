@@ -1,8 +1,8 @@
 """Shared fixtures for the platform-data conformance suite (CONTRACTS.md §4).
 
 The SAME test cases run against the reference
-:class:`~authy_package.db.memory.InMemoryDatabase` and the rewritten
-:class:`~authy_package.db.sql.SQLDatabase` (SQLite + aiosqlite, file-backed
+:class:`~tessera.db.memory.InMemoryDatabase` and the rewritten
+:class:`~tessera.db.sql.SQLDatabase` (SQLite + aiosqlite, file-backed
 per test so concurrent connections behave like a real server). MongoDB and
 DynamoDB adapters get dedicated unit-level tests with mocked/stubbed
 clients (no live servers required).
@@ -18,8 +18,8 @@ from typing import Any
 
 import pytest
 
-from authy_package.db import InMemoryDatabase
-from authy_package.db.sql import SQLDatabase
+from tessera.db import InMemoryDatabase
+from tessera.db.sql import SQLDatabase
 
 __all__ = [
     "db",

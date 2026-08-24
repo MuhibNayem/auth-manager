@@ -1,4 +1,4 @@
-# authy-package — Operations Runbook
+# tessera — Operations Runbook
 
 Status: reconciled with the binding contracts in `docs/CONTRACTS.md`
 (2.0 remediation). Where this document and the code disagree, the code +
@@ -32,13 +32,13 @@ python -c "import secrets; print(secrets.token_urlsafe(24))"
 ```
 
 ```bash
-pip install "authy-package[postgresql]"
+pip install "tessera[postgresql]"
 
-export AUTHY_ENV=development
-export AUTHY_JWT_SECRET="<generated above>"
-export AUTHY_DB_TYPE=sql
-export AUTHY_DB_URL="postgresql+asyncpg://<user>:<password>@localhost:5432/<db>"
-export AUTHY_REDIS_URL="redis://localhost:6379"
+export TESSERA_ENV=development
+export TESSERA_JWT_SECRET="<generated above>"
+export TESSERA_DB_TYPE=sql
+export TESSERA_DB_URL="postgresql+asyncpg://<user>:<password>@localhost:5432/<db>"
+export TESSERA_REDIS_URL="redis://localhost:6379"
 
 python main.py
 ```
@@ -52,9 +52,9 @@ and cache implementations.
 ## Installation
 
 ```bash
-pip install authy-package                 # slim core
-pip install "authy-package[all]"          # every optional feature
-pip install "authy-package[dev]"          # pytest, pytest-asyncio, pytest-cov, ruff, mypy
+pip install tessera                 # slim core
+pip install "tessera[all]"          # every optional feature
+pip install "tessera[dev]"          # pytest, pytest-asyncio, pytest-cov, ruff, mypy
 ```
 
 Extras: `fastapi`, `flask`, `django`, `postgresql`, `mongodb`, `dynamodb`,
@@ -66,23 +66,23 @@ Extras: `fastapi`, `flask`, `django`, `postgresql`, `mongodb`, `dynamodb`,
 ```bash
 docker run -d -p 6379:6379 redis:7-alpine
 docker run -d -p 5432:5432 \
-  -e POSTGRES_DB=authy \
-  -e POSTGRES_USER=authy \
+  -e POSTGRES_DB=tessera \
+  -e POSTGRES_USER=tessera \
   -e POSTGRES_PASSWORD="$(python -c 'import secrets; print(secrets.token_urlsafe(24))')" \
   postgres:15-alpine
 ```
 
 Print the generated password into your shell (or a git-ignored `.env`)
-before running the container, and put the same value in `AUTHY_DB_URL`.
+before running the container, and put the same value in `TESSERA_DB_URL`.
 
 ---
 
 ## Configuration reference
 
 Configuration is a single `AuthConfig` object (see
-`authy_package/config.py`), constructible directly or via
+`tessera/config.py`), constructible directly or via
 `AuthConfig.from_env()`. `config.validate()` raises
-`authy_package.errors.ConfigError` when:
+`tessera.errors.ConfigError` when:
 
 - `jwt_secret` is missing/empty or equal to a known public default;
 - `env == "production"` and any placeholder value remains (secrets,
@@ -92,51 +92,51 @@ Configuration is a single `AuthConfig` object (see
 
 `get_auth()` / `init_auth()` always call `validate()` before returning.
 
-### Core settings (`AuthConfig` fields and `AUTHY_*` env overrides)
+### Core settings (`AuthConfig` fields and `TESSERA_*` env overrides)
 
 | Env var | Field | Default | Notes |
 |---|---|---|---|
-| `AUTHY_ENV` | `env` | `development` | `development` \| `staging` \| `production` |
-| `AUTHY_JWT_SECRET` | `jwt_secret` | — (required) | Generate with `secrets.token_urlsafe(48)` |
-| `AUTHY_JWT_ALGORITHM` | `jwt_algorithm` | `HS256` | |
-| `AUTHY_TOKEN_EXPIRATION` | `access_token_ttl_seconds` | `3600` | Legacy variable name kept for compatibility; also feeds the cache token TTL |
-| `AUTHY_REFRESH_TOKEN_TTL_DAYS` | `refresh_token_ttl_days` | `7` | |
-| `AUTHY_JWT_ISSUER` | `jwt_issuer` | `None` | Optional `iss` claim |
-| `AUTHY_JWT_AUDIENCE` | `jwt_audience` | `None` | Optional `aud` claim |
-| `AUTHY_JWT_CLOCK_SKEW_SECONDS` | `jwt_clock_skew_seconds` | `30` | |
-| `AUTHY_SESSION_EXPIRY_SECONDS` | `session_expiry_seconds` | `604800` | 7 days |
-| `AUTHY_MAX_CONCURRENT_SESSIONS` | `max_concurrent_sessions` | `5` | |
-| `AUTHY_REVOKE_SESSIONS_ON_PASSWORD_CHANGE` | `revoke_sessions_on_password_change` | `true` | |
-| `AUTHY_RATE_LIMIT_ENABLED` | `rate_limit_enabled` | `true` | |
-| `AUTHY_RATE_LIMIT_MAX_ATTEMPTS` | `rate_limit_max_attempts` | `5` | |
-| `AUTHY_RATE_LIMIT_WINDOW_SECONDS` | `rate_limit_window_seconds` | `300` | |
-| `AUTHY_ACCOUNT_LOCKOUT_DURATION_SECONDS` | `account_lockout_duration_seconds` | `900` | |
-| `AUTHY_MFA_REQUIRED` | `mfa_required` | `false` | |
-| `AUTHY_PASSWORD_HASH_ALGORITHM` | `password_hash_algorithm` | `bcrypt` | `bcrypt` \| `argon2` (argon2 needs `argon2-cffi`) |
-| `AUTHY_BCRYPT_ROUNDS` | `bcrypt_rounds` | `12` | |
-| `AUTHY_RESET_TOKEN_TTL_SECONDS` | `reset_token_ttl_seconds` | `900` | |
-| `AUTHY_BASE_URL` | `base_url` | `http://localhost:8000` | Must be HTTPS in production; used to build reset/magic links |
-| `AUTHY_MAGIC_LINK_TTL_SECONDS` | `magic_link_ttl_seconds` | `600` | |
-| `AUTHY_DEFAULT_REDIRECT_URL` | `default_redirect_url` | `None` | |
-| `AUTHY_AUTO_CREATE_USERS` | `auto_create_users` | `false` | Social/SSO auto-provisioning |
-| `AUTHY_RP_ID` | `rp_id` | `None` | WebAuthn relying-party id |
-| `AUTHY_RP_NAME` | `rp_name` | `Authy` | WebAuthn relying-party name |
-| `AUTHY_EMAIL_ENABLED` | `email_enabled` | `false` | Master switch for transactional email |
-| `AUTHY_EMAIL_PROVIDER` | `email_provider` | `mailjet` | `mailjet` \| `sendgrid` \| `ses` |
+| `TESSERA_ENV` | `env` | `development` | `development` \| `staging` \| `production` |
+| `TESSERA_JWT_SECRET` | `jwt_secret` | — (required) | Generate with `secrets.token_urlsafe(48)` |
+| `TESSERA_JWT_ALGORITHM` | `jwt_algorithm` | `HS256` | |
+| `TESSERA_TOKEN_EXPIRATION` | `access_token_ttl_seconds` | `3600` | Legacy variable name kept for compatibility; also feeds the cache token TTL |
+| `TESSERA_REFRESH_TOKEN_TTL_DAYS` | `refresh_token_ttl_days` | `7` | |
+| `TESSERA_JWT_ISSUER` | `jwt_issuer` | `None` | Optional `iss` claim |
+| `TESSERA_JWT_AUDIENCE` | `jwt_audience` | `None` | Optional `aud` claim |
+| `TESSERA_JWT_CLOCK_SKEW_SECONDS` | `jwt_clock_skew_seconds` | `30` | |
+| `TESSERA_SESSION_EXPIRY_SECONDS` | `session_expiry_seconds` | `604800` | 7 days |
+| `TESSERA_MAX_CONCURRENT_SESSIONS` | `max_concurrent_sessions` | `5` | |
+| `TESSERA_REVOKE_SESSIONS_ON_PASSWORD_CHANGE` | `revoke_sessions_on_password_change` | `true` | |
+| `TESSERA_RATE_LIMIT_ENABLED` | `rate_limit_enabled` | `true` | |
+| `TESSERA_RATE_LIMIT_MAX_ATTEMPTS` | `rate_limit_max_attempts` | `5` | |
+| `TESSERA_RATE_LIMIT_WINDOW_SECONDS` | `rate_limit_window_seconds` | `300` | |
+| `TESSERA_ACCOUNT_LOCKOUT_DURATION_SECONDS` | `account_lockout_duration_seconds` | `900` | |
+| `TESSERA_MFA_REQUIRED` | `mfa_required` | `false` | |
+| `TESSERA_PASSWORD_HASH_ALGORITHM` | `password_hash_algorithm` | `bcrypt` | `bcrypt` \| `argon2` (argon2 needs `argon2-cffi`) |
+| `TESSERA_BCRYPT_ROUNDS` | `bcrypt_rounds` | `12` | |
+| `TESSERA_RESET_TOKEN_TTL_SECONDS` | `reset_token_ttl_seconds` | `900` | |
+| `TESSERA_BASE_URL` | `base_url` | `http://localhost:8000` | Must be HTTPS in production; used to build reset/magic links |
+| `TESSERA_MAGIC_LINK_TTL_SECONDS` | `magic_link_ttl_seconds` | `600` | |
+| `TESSERA_DEFAULT_REDIRECT_URL` | `default_redirect_url` | `None` | |
+| `TESSERA_AUTO_CREATE_USERS` | `auto_create_users` | `false` | Social/SSO auto-provisioning |
+| `TESSERA_RP_ID` | `rp_id` | `None` | WebAuthn relying-party id |
+| `TESSERA_RP_NAME` | `rp_name` | `Tessera` | WebAuthn relying-party name |
+| `TESSERA_EMAIL_ENABLED` | `email_enabled` | `false` | Master switch for transactional email |
+| `TESSERA_EMAIL_PROVIDER` | `email_provider` | `mailjet` | `mailjet` \| `sendgrid` \| `ses` |
 
 ### Database selection
 
 | Env var | Purpose |
 |---|---|
-| `AUTHY_DB_TYPE` | `sql` \| `mongodb` \| `dynamodb` \| `memory` |
-| `AUTHY_DB_URL` | Connection string (SQL/MongoDB). `memory` needs none |
-| `AUTHY_DB_NAME` | Database name (MongoDB) |
+| `TESSERA_DB_TYPE` | `sql` \| `mongodb` \| `dynamodb` \| `memory` |
+| `TESSERA_DB_URL` | Connection string (SQL/MongoDB). `memory` needs none |
+| `TESSERA_DB_NAME` | Database name (MongoDB) |
 
 DynamoDB reads AWS configuration via the standard credential provider
 chain — prefer IAM roles over any static keys
 (see [AWS_SECURITY_GUIDE.md](AWS_SECURITY_GUIDE.md)). Table prefix and
 optional cross-account role ARN come from
-`AUTHY_DYNAMODB_TABLE_PREFIX` / `AUTHY_DYNAMODB_ROLE_ARN`.
+`TESSERA_DYNAMODB_TABLE_PREFIX` / `TESSERA_DYNAMODB_ROLE_ARN`.
 
 ### Nested configs
 
@@ -146,11 +146,11 @@ env vars (full list in `config.py::from_env`):
 
 | Area | Env vars |
 |---|---|
-| Cache | `AUTHY_CACHE_ENABLED`, `AUTHY_REDIS_URL`, `AUTHY_REFRESH_TOKEN_EXPIRATION` (cache-level refresh TTL, seconds) |
+| Cache | `TESSERA_CACHE_ENABLED`, `TESSERA_REDIS_URL`, `TESSERA_REFRESH_TOKEN_EXPIRATION` (cache-level refresh TTL, seconds) |
 | Social | `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET`, `GITHUB_CLIENT_ID`/`GITHUB_CLIENT_SECRET`, `FACEBOOK_APP_ID`/`FACEBOOK_APP_SECRET`, `APPLE_CLIENT_ID`/`APPLE_TEAM_ID`/`APPLE_KEY_ID`/`APPLE_PRIVATE_KEY_PATH` (+ per-provider redirect URIs) |
-| Cognito | `AUTHY_COGNITO_ENABLED`, `AWS_REGION`, `COGNITO_USER_POOL_ID`, `COGNITO_APP_CLIENT_ID` |
-| SMS | `AUTHY_SMS_ENABLED`, `AUTHY_SMS_PROVIDER` (`twilio`\|`aws_sns`), `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` |
-| Bot protection | `AUTHY_BOT_PROTECTION_ENABLED`, `AUTHY_CAPTCHA_PROVIDER` (`hcaptcha`\|`recaptcha`), `HCAPTCHA_SITE_KEY`/`HCAPTCHA_SECRET_KEY`, `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET_KEY` |
+| Cognito | `TESSERA_COGNITO_ENABLED`, `AWS_REGION`, `COGNITO_USER_POOL_ID`, `COGNITO_APP_CLIENT_ID` |
+| SMS | `TESSERA_SMS_ENABLED`, `TESSERA_SMS_PROVIDER` (`twilio`\|`aws_sns`), `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` |
+| Bot protection | `TESSERA_BOT_PROTECTION_ENABLED`, `TESSERA_CAPTCHA_PROVIDER` (`hcaptcha`\|`recaptcha`), `HCAPTCHA_SITE_KEY`/`HCAPTCHA_SECRET_KEY`, `RECAPTCHA_SITE_KEY`/`RECAPTCHA_SECRET_KEY` |
 | Email | `MAILJET_API_KEY`, `MAILJET_API_SECRET`, `SENDER_EMAIL`, `SENDER_NAME` (sendgrid/ses equivalents) |
 
 Store all of these in a git-ignored `.env` (loaded via `python-dotenv`)
@@ -159,10 +159,10 @@ or your platform's secret manager — never in version control.
 ### Programmatic configuration
 
 ```python
-from authy_package.config import AuthConfig
-from authy_package.errors import ConfigError
+from tessera.config import AuthConfig
+from tessera.errors import ConfigError
 
-config = AuthConfig.from_env()   # reads AUTHY_* variables
+config = AuthConfig.from_env()   # reads TESSERA_* variables
 try:
     config.validate()
 except ConfigError as exc:
@@ -179,7 +179,7 @@ All flows below are async and return dicts. Token payloads are always
 ### 1. Traditional username/password
 
 ```python
-from authy_package.core.auth_manager import TraditionalAuthManager
+from tessera.core.auth_manager import TraditionalAuthManager
 
 auth = TraditionalAuthManager(db=db, cache=cache, mfa_manager=mfa,
                               security_manager=security)
@@ -198,8 +198,8 @@ await auth.logout_user(access_token=new_tokens["access_token"],
 
 Login failures are identical for unknown-user vs bad-password, and a
 constant-time dummy hash runs either way (contract §6). Rate limiting and
-account lockout are enforced via the cache (`authy:ratelimit:*`,
-`authy:lockout:*` keys).
+account lockout are enforced via the cache (`tessera:ratelimit:*`,
+`tessera:lockout:*` keys).
 
 ### 2. MFA (TOTP)
 
@@ -215,19 +215,19 @@ await auth.reconfigure_mfa(username="janedoe")
 await auth.request_password_reset(email="jane@example.com", username=None,
                                   phone=None, sender_email="noreply@myapp.example",
                                   sender_name="My App")
-# The user receives a link: {AUTHY_BASE_URL}/auth/reset-password?token=...
+# The user receives a link: {TESSERA_BASE_URL}/auth/reset-password?token=...
 await auth.reset_password(email="jane@example.com", token=token_from_link,
                           new_password=new_user_password)
 ```
 
 Reset tokens are single-use, hashed at rest, and expire per
-`AUTHY_RESET_TOKEN_TTL_SECONDS`. They are never echoed in responses or
+`TESSERA_RESET_TOKEN_TTL_SECONDS`. They are never echoed in responses or
 logs.
 
 ### 4. Magic links
 
 ```python
-from authy_package.passwordless.magic_link import MagicLinkManager
+from tessera.passwordless.magic_link import MagicLinkManager
 
 magic = MagicLinkManager(db=db, cache=cache, config=config)
 await magic.send_magic_link(email="jane@example.com",
@@ -238,7 +238,7 @@ user = await magic.verify_magic_link(token=token_from_email)
 ### 5. Passkeys / WebAuthn
 
 ```python
-from authy_package.passwordless.passkey import PasskeyManager
+from tessera.passwordless.passkey import PasskeyManager
 
 passkeys = PasskeyManager(db=db, config=config)
 options = await passkeys.register_start(user_id=user_id, email="jane@example.com")
@@ -253,7 +253,7 @@ Requires the `webauthn` extra.
 ### 6. Social OAuth
 
 ```python
-from authy_package.social.google import GoogleManager
+from tessera.social.google import GoogleManager
 
 google = GoogleManager(client_id=..., client_secret=...,
                        redirect_uri="https://app.example.com/auth/google/callback")
@@ -268,8 +268,8 @@ user_info = await google.get_user_info(access_token=tokens["access_token"])
 ### 7. AWS Cognito
 
 ```python
-from authy_package.cognito.cognito_manager import CognitoManager
-from authy_package.core.auth_manager import CognitoAuthManager
+from tessera.cognito.cognito_manager import CognitoManager
+from tessera.core.auth_manager import CognitoAuthManager
 
 cognito = CognitoManager(region_name=os.environ["AWS_REGION"],
                          user_pool_id=os.environ["COGNITO_USER_POOL_ID"],
@@ -289,7 +289,7 @@ Full flow (social login, confirmation, MFA) in
 ## Organization management
 
 ```python
-from authy_package.organizations.org_manager import OrganizationManager, OrgRole
+from tessera.organizations.org_manager import OrganizationManager, OrgRole
 
 orgs = OrganizationManager(config=config, db=db, cache=cache)
 
@@ -310,7 +310,7 @@ await orgs.remove_member(org["id"], member_user_id)  # last owner cannot be remo
 
 Roles: `OWNER → ADMIN → MEMBER → GUEST`. Invitations expire (default
 7 days). For fine-grained permissions beyond org roles, use the RBAC
-manager (`AUTHY_RBAC_IMPLEMENTATION_REPORT.md`).
+manager (`TESSERA_RBAC_IMPLEMENTATION_REPORT.md`).
 
 ---
 
@@ -323,7 +323,7 @@ SHA-256 checksum over its canonical payload including the previous
 checksum — tampering breaks the chain).
 
 ```python
-from authy_package.admin.audit_logger import AuditLogger, EventType
+from tessera.admin.audit_logger import AuditLogger, EventType
 
 audit = AuditLogger(config=config, db=db, cache=cache)
 await audit.log(event_type=EventType.LOGIN_SUCCESS, action="User logged in",
@@ -338,21 +338,21 @@ stats = await audit.get_statistics(start_date=since, end_date=now)
 deleted = await audit.cleanup_old_events()   # honors retention setting
 ```
 
-CLI equivalents: `authy audit search`, `authy audit export`.
+CLI equivalents: `tessera audit search`, `tessera audit export`.
 
 ### Webhooks
 
 Delivery is HMAC-SHA256 signed: signature covers
 `f"{timestamp}.{canonical_json}"`. Receivers get these headers:
 
-- `X-Authy-Signature: sha256=<hex>`
-- `X-Authy-Timestamp`
-- `X-Authy-Event`
-- `X-Authy-Delivery-Id`
+- `X-Tessera-Signature: sha256=<hex>`
+- `X-Tessera-Timestamp`
+- `X-Tessera-Event`
+- `X-Tessera-Delivery-Id`
 
 ```python
 import httpx
-from authy_package.webhooks.webhook_manager import WebhookManager
+from tessera.webhooks.webhook_manager import WebhookManager
 
 webhooks = WebhookManager(config=config, db=db, cache=cache,
                           http_client=httpx.AsyncClient())
@@ -371,7 +371,7 @@ last-4 only), and can be rotated.
 
 Receiver-side verification must use `hmac.compare_digest` with a ±300s
 timestamp window and a delivery-id replay store — see the helpers in
-`authy_package/webhooks/`.
+`tessera/webhooks/`.
 
 ---
 
@@ -388,21 +388,21 @@ services:
   app:
     build: .
     environment:
-      AUTHY_ENV: production
-      AUTHY_JWT_SECRET: ${AUTHY_JWT_SECRET:?set AUTHY_JWT_SECRET}
-      AUTHY_DB_TYPE: sql
-      AUTHY_DB_URL: ${AUTHY_DB_URL:?set AUTHY_DB_URL}
-      AUTHY_REDIS_URL: redis://redis:6379
-      AUTHY_BASE_URL: ${AUTHY_BASE_URL:?set AUTHY_BASE_URL (https)}
+      TESSERA_ENV: production
+      TESSERA_JWT_SECRET: ${TESSERA_JWT_SECRET:?set TESSERA_JWT_SECRET}
+      TESSERA_DB_TYPE: sql
+      TESSERA_DB_URL: ${TESSERA_DB_URL:?set TESSERA_DB_URL}
+      TESSERA_REDIS_URL: redis://redis:6379
+      TESSERA_BASE_URL: ${TESSERA_BASE_URL:?set TESSERA_BASE_URL (https)}
     depends_on: [db, redis]
     ports: ["8000:8000"]
 
   db:
     image: postgres:15-alpine
     environment:
-      POSTGRES_DB: authy
-      POSTGRES_USER: authy
-      POSTGRES_PASSWORD: ${AUTHY_DB_PASSWORD:?set AUTHY_DB_PASSWORD}
+      POSTGRES_DB: tessera
+      POSTGRES_USER: tessera
+      POSTGRES_PASSWORD: ${TESSERA_DB_PASSWORD:?set TESSERA_DB_PASSWORD}
     volumes: [postgres_data:/var/lib/postgresql/data]
 
   redis:
@@ -424,18 +424,18 @@ probe on your `/health` endpoint, and TLS termination at the ingress:
 
 ```yaml
 env:
-  - name: AUTHY_JWT_SECRET
-    valueFrom: {secretKeyRef: {name: authy-secrets, key: jwt-secret}}
-  - name: AUTHY_DB_URL
-    valueFrom: {secretKeyRef: {name: authy-secrets, key: database-url}}
+  - name: TESSERA_JWT_SECRET
+    valueFrom: {secretKeyRef: {name: tessera-secrets, key: jwt-secret}}
+  - name: TESSERA_DB_URL
+    valueFrom: {secretKeyRef: {name: tessera-secrets, key: database-url}}
 readinessProbe:
   httpGet: {path: /health, port: 8000}
 ```
 
 ### Production checklist
 
-- `AUTHY_ENV=production`, HTTPS `AUTHY_BASE_URL` (config validation enforces both)
-- Strong unique `AUTHY_JWT_SECRET` (rotate periodically; re-issue sessions after rotation)
+- `TESSERA_ENV=production`, HTTPS `TESSERA_BASE_URL` (config validation enforces both)
+- Strong unique `TESSERA_JWT_SECRET` (rotate periodically; re-issue sessions after rotation)
 - Rate limiting + lockout enabled; MFA for privileged accounts
 - Webhook receivers verify signatures; endpoint URLs are public HTTPS
 - AWS features on IAM roles (no static keys) — see AWS_SECURITY_GUIDE.md
@@ -449,7 +449,7 @@ Releases are cut from semver tags; publishing never happens on plain
 pushes to `main` (see `.github/workflows/publish.yml`).
 
 1. Bump the version in **both** `pyproject.toml` (`[tool.poetry] version`)
-   and `authy_package/__init__.py` (`__version__`). The CI `version-sync`
+   and `tessera/__init__.py` (`__version__`). The CI `version-sync`
    job fails if they drift.
 2. Merge to `main`; CI (ruff + pytest matrix 3.9–3.12) must pass.
 3. Tag and push:
@@ -462,7 +462,7 @@ pushes to `main` (see `.github/workflows/publish.yml`).
    publishing (protected `pypi` environment), and creates the GitHub
    Release. The tag is created exactly once — by you, in step 3.
 
-First-time PyPI setup: configure `authy-package` on PyPI as a trusted
+First-time PyPI setup: configure `tessera` on PyPI as a trusted
 publisher for the `MuhibNayem/auth-manager` workflow `publish.yml` with
 the `pypi` environment.
 
@@ -488,14 +488,14 @@ Both `AbstractDatabase` and `AbstractCache` implement `health_check()`
 
 | Symptom | Check |
 |---|---|
-| `ConfigError` at startup | `AUTHY_JWT_SECRET` set and not a placeholder; DB URL present; production requires HTTPS `AUTHY_BASE_URL` and no placeholder values |
-| Redis connection failures | `redis-cli -u "$AUTHY_REDIS_URL" ping` returns PONG; network/security groups |
-| DB connection timeout | Reachability + pool sizing (SQLAlchemy `pool_size`/`max_overflow` in `AUTHY_DB_URL` options) |
-| Magic links / resets not arriving | Email provider credentials (`MAILJET_API_KEY`/...), `AUTHY_BASE_URL` reachable by users |
-| `RateLimitError` on login | Expected behavior after `AUTHY_RATE_LIMIT_MAX_ATTEMPTS` failures in the window; lockout lasts `AUTHY_ACCOUNT_LOCKOUT_DURATION_SECONDS` |
+| `ConfigError` at startup | `TESSERA_JWT_SECRET` set and not a placeholder; DB URL present; production requires HTTPS `TESSERA_BASE_URL` and no placeholder values |
+| Redis connection failures | `redis-cli -u "$TESSERA_REDIS_URL" ping` returns PONG; network/security groups |
+| DB connection timeout | Reachability + pool sizing (SQLAlchemy `pool_size`/`max_overflow` in `TESSERA_DB_URL` options) |
+| Magic links / resets not arriving | Email provider credentials (`MAILJET_API_KEY`/...), `TESSERA_BASE_URL` reachable by users |
+| `RateLimitError` on login | Expected behavior after `TESSERA_RATE_LIMIT_MAX_ATTEMPTS` failures in the window; lockout lasts `TESSERA_ACCOUNT_LOCKOUT_DURATION_SECONDS` |
 | Refresh rejected after rotation | Old refresh token is deleted on rotation (contract §3.1) — clients must store the newest pair |
 
-`authy doctor` runs these checks locally: Python version, imports, DB and
+`tessera doctor` runs these checks locally: Python version, imports, DB and
 Redis connectivity (`health_check()`), and `config.validate()`, reporting
 an honest ✓/✗ table.
 
@@ -507,7 +507,7 @@ an honest ✓/✗ table.
 A: Export users from the source system, import them with your own scripts
 against the `AbstractDatabase` contract (`db.create_user(...)`), and force
 a password reset on first login unless you can carry compatible password
-hashes (bcrypt hashes are importable as-is). `authy migrate` manages
+hashes (bcrypt hashes are importable as-is). `tessera migrate` manages
 schema migrations of this package's own tables; it does not import
 third-party user data.
 
@@ -528,7 +528,7 @@ sessions to survive Redis restarts.
 
 **Q: Can I disable password login entirely?**
 A: Yes — expose only the passwordless/social/SSO endpoints and set
-`AUTHY_MFA_REQUIRED`/policies as needed.
+`TESSERA_MFA_REQUIRED`/policies as needed.
 
 **Q: GDPR deletion requests?**
 A: Export the user's audit trail with `audit.export_events(...)`, then

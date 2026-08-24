@@ -1,4 +1,4 @@
-"""``authy deploy`` tests — honest artifact generation, no fake deploys."""
+"""``tessera deploy`` tests — honest artifact generation, no fake deploys."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import shutil
 
 import yaml
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 
 def test_deploy_aws_generates_artifacts(runner, monkeypatch, tmp_path):
@@ -33,13 +33,13 @@ def test_deploy_aws_generates_artifacts(runner, monkeypatch, tmp_path):
 
 def test_deploy_kubernetes_generates_manifests(runner, monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    result = runner.invoke(cli, ["deploy", "kubernetes", "--namespace", "authy-test", "--replicas", "2"])
+    result = runner.invoke(cli, ["deploy", "kubernetes", "--namespace", "tessera-test", "--replicas", "2"])
     assert result.exit_code == 0, result.output
 
     k8s = tmp_path / "deploy-out" / "k8s"
     deployment = yaml.safe_load((k8s / "deployment.yaml").read_text(encoding="utf-8"))
     assert deployment["spec"]["replicas"] == 2
-    assert deployment["metadata"]["namespace"] == "authy-test"
+    assert deployment["metadata"]["namespace"] == "tessera-test"
     assert (k8s / "namespace.yaml").exists()
     assert (k8s / "service.yaml").exists()
     assert "No cluster resources were created" in result.output
@@ -53,10 +53,10 @@ def test_deploy_gcp_and_azure_generate_compose(runner, monkeypatch, tmp_path):
     assert compose["x-gcp"]["project_id"] == "my-proj"
     assert "No GCP resources were created" in result.output
 
-    result = runner.invoke(cli, ["deploy", "azure", "--resource-group", "rg-authy"])
+    result = runner.invoke(cli, ["deploy", "azure", "--resource-group", "rg-tessera"])
     assert result.exit_code == 0, result.output
     compose = yaml.safe_load((tmp_path / "deploy-out" / "azure-compose.yaml").read_text())
-    assert compose["x-azure"]["resource_group"] == "rg-authy"
+    assert compose["x-azure"]["resource_group"] == "rg-tessera"
     assert "No Azure resources were created" in result.output
 
 
@@ -72,7 +72,7 @@ def test_deploy_docker_without_docker_cli_fails_honestly(runner, monkeypatch, tm
 
 
 def test_aws_engine_health_check_is_honest():
-    from authy_package.cli.deploy import AWSDeploymentEngine
+    from tessera.cli.deploy import AWSDeploymentEngine
 
     engine = AWSDeploymentEngine()
     assert engine.health_check() is False  # nothing built yet

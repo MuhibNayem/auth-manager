@@ -1,15 +1,15 @@
-"""``authy doctor`` CLI tests — honest pass/fail with real exit codes."""
+"""``tessera doctor`` CLI tests — honest pass/fail with real exit codes."""
 
 from __future__ import annotations
 
 import secrets
 
-from authy_package.cli import cli
+from tessera.cli import cli
 
 
 def test_doctor_fails_when_config_invalid(runner, monkeypatch):
-    """No AUTHY_JWT_SECRET -> ConfigError -> exit code 1."""
-    monkeypatch.delenv("AUTHY_JWT_SECRET", raising=False)
+    """No TESSERA_JWT_SECRET -> ConfigError -> exit code 1."""
+    monkeypatch.delenv("TESSERA_JWT_SECRET", raising=False)
     result = runner.invoke(cli, ["doctor"])
     assert result.exit_code == 1
     assert "FAIL" in result.output
@@ -17,9 +17,9 @@ def test_doctor_fails_when_config_invalid(runner, monkeypatch):
 
 
 def test_doctor_passes_with_healthy_memory_db(runner, monkeypatch):
-    monkeypatch.setenv("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-    monkeypatch.setenv("AUTHY_DB_TYPE", "memory")
-    monkeypatch.setenv("AUTHY_CACHE_ENABLED", "false")
+    monkeypatch.setenv("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+    monkeypatch.setenv("TESSERA_DB_TYPE", "memory")
+    monkeypatch.setenv("TESSERA_CACHE_ENABLED", "false")
 
     result = runner.invoke(cli, ["doctor"])
     assert result.output  # render something even on failure for debugging
@@ -29,22 +29,22 @@ def test_doctor_passes_with_healthy_memory_db(runner, monkeypatch):
 
 
 def test_doctor_reports_missing_db_url(runner, monkeypatch):
-    """sql backend without AUTHY_DB_URL must fail the database check."""
-    monkeypatch.setenv("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-    monkeypatch.setenv("AUTHY_DB_TYPE", "sql")
-    monkeypatch.delenv("AUTHY_DB_URL", raising=False)
-    monkeypatch.setenv("AUTHY_CACHE_ENABLED", "false")
+    """sql backend without TESSERA_DB_URL must fail the database check."""
+    monkeypatch.setenv("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+    monkeypatch.setenv("TESSERA_DB_TYPE", "sql")
+    monkeypatch.delenv("TESSERA_DB_URL", raising=False)
+    monkeypatch.setenv("TESSERA_CACHE_ENABLED", "false")
 
     result = runner.invoke(cli, ["doctor"])
     assert result.exit_code == 1
-    assert "AUTHY_DB_URL" in result.output
+    assert "TESSERA_DB_URL" in result.output
 
 
 def test_doctor_reports_optional_extras_honestly(runner, monkeypatch):
     """Missing optional extras are reported but do not fail the run."""
-    monkeypatch.setenv("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
-    monkeypatch.setenv("AUTHY_DB_TYPE", "memory")
-    monkeypatch.setenv("AUTHY_CACHE_ENABLED", "false")
+    monkeypatch.setenv("TESSERA_JWT_SECRET", secrets.token_urlsafe(48))
+    monkeypatch.setenv("TESSERA_DB_TYPE", "memory")
+    monkeypatch.setenv("TESSERA_CACHE_ENABLED", "false")
 
     result = runner.invoke(cli, ["doctor"])
     assert result.exit_code == 0, result.output

@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from authy_package.errors import (
+from tessera.errors import (
     AuthenticationError,
     AuthorizationError,
-    AuthyError,
+    TesseraError,
     ConfigError,
     DatabaseError,
     IntegrityError,
@@ -19,9 +19,9 @@ from authy_package.errors import (
 
 
 def test_base_error_carries_code_and_message() -> None:
-    err = AuthyError("something broke")
+    err = TesseraError("something broke")
     assert err.message == "something broke"
-    assert err.code == "authy_error"
+    assert err.code == "tessera_error"
     assert str(err) == "something broke"
 
 
@@ -45,7 +45,7 @@ def test_custom_code_overrides_default() -> None:
 )
 def test_subclass_default_codes(cls: type, expected_code: str) -> None:
     err = cls("detail")
-    assert isinstance(err, AuthyError)
+    assert isinstance(err, TesseraError)
     assert err.code == expected_code
     assert err.message == "detail"
 
@@ -54,7 +54,7 @@ def test_rate_limit_error_retry_after() -> None:
     err = RateLimitError("slow down", retry_after=42)
     assert err.retry_after == 42
     assert err.code == "rate_limited"
-    assert isinstance(err, AuthyError)
+    assert isinstance(err, TesseraError)
 
 
 def test_to_dict_serialization() -> None:

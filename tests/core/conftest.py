@@ -11,16 +11,16 @@ from typing import Any
 
 import pytest
 
-from authy_package.cache import InMemoryCache
-from authy_package.config import AuthConfig, CacheConfig, DatabaseConfig
-from authy_package.core.auth_manager import SocialAuthManager, TraditionalAuthManager
-from authy_package.db import InMemoryDatabase
-from authy_package.mfa.mfa_setup import MFAAuthManager
-from authy_package.sessions.session_manager import SessionManager
-from authy_package.utils.security import JWTTokenManager, SecurityManager
+from tessera.cache import InMemoryCache
+from tessera.config import AuthConfig, CacheConfig, DatabaseConfig
+from tessera.core.auth_manager import SocialAuthManager, TraditionalAuthManager
+from tessera.db import InMemoryDatabase
+from tessera.mfa.mfa_setup import MFAAuthManager
+from tessera.sessions.session_manager import SessionManager
+from tessera.utils.security import JWTTokenManager, SecurityManager
 
 _ENV_PREFIXES = (
-    "AUTHY_",
+    "TESSERA_",
     "MAILJET_",
     "SENDGRID_",
     "SES_",
