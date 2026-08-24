@@ -1,13 +1,29 @@
 import axios from 'axios';
-import type { 
-  User, Organization, AuditEvent, Session, 
+import type { InternalAxiosRequestConfig } from 'axios';
+import type {
+  User, Organization, AuditEvent, Session,
   DashboardMetrics, WebhookEndpoint, HealthStatus,
-  SecurityAnalysis, UsersListResponse, AuditEventsListResponse, OrganizationsListResponse
+  SecurityAnalysis, UsersListResponse, AuditEventsListResponse, OrganizationsListResponse,
+  LoginResponse,
 } from '../types';
+import { readStoredToken } from './auth';
 
-const API_BASE = '/admin/api/v1';
+export const API_BASE = '/admin/api/v1';
+export const API_V2_BASE = '/admin/v2';
 
-// Create axios instance with auth interceptor
+/**
+ * Attach the admin bearer token (stored under `authy_admin_token`) to a
+ * request when present. Shared by the v1 and v2 clients.
+ */
+function attachAdminToken(config: InternalAxiosRequestConfig): InternalAxiosRequestConfig {
+  const token = readStoredToken();
+  if (token) {
+    config.headers.set('Authorization', `Bearer ${token}`);
+  }
+  return config;
+}
+
+// Admin API v1 client (dashboard, users, orgs, audit, sessions, webhooks, health)
 export const apiClient = axios.create({
   baseURL: API_BASE,
   headers: {
@@ -16,14 +32,34 @@ export const apiClient = axios.create({
 });
 export const api = apiClient;
 
-// Add token interceptor (token will be set from store)
-apiClient.interceptors.request.use((config) => {
-  const token = localStorage.getItem('authy_admin_token');
-  if (token) {
-    config.headers.Authorization = `Bearer ${token}`;
-  }
-  return config;
+// Admin API v2 client (RBAC, API keys, branding, reports, security analytics).
+// v2 routes live under /admin/v2 — NOT under /admin/api/v1 — so they must be
+// issued from this client to avoid double-prefixed URLs.
+export const apiClientV2 = axios.create({
+  baseURL: API_V2_BASE,
+  headers: {
+    'Content-Type': 'application/json',
+  },
 });
+export const apiV2 = apiClientV2;
+
+apiClient.interceptors.request.use((config) => attachAdminToken(config));
+apiClientV2.interceptors.request.use((config) => attachAdminToken(config));
+
+// Auth (admin login)
+export const authAPI = {
+  /**
+   * POST {username_or_email, password} to /admin/api/v1/auth/login and
+   * return the issued access token plus (optionally) the admin user record.
+   */
+  login: async (usernameOrEmail: string, password: string): Promise<LoginResponse> => {
+    const { data } = await apiClient.post<LoginResponse>('/auth/login', {
+      username_or_email: usernameOrEmail,
+      password,
+    });
+    return data;
+  },
+};
 
 // Dashboard Metrics
 export const dashboardAPI = {

@@ -3,16 +3,22 @@ Production-Ready Database Utilities for Enterprise Authy.
 Provides connection pooling, retry logic, circuit breakers, and observability.
 """
 import asyncio
-import time
 import logging
+import random
+import time
 from typing import Any, Dict, Callable, TypeVar, Optional
 from functools import wraps
 from dataclasses import dataclass
 from enum import Enum
 
-logger = logging.getLogger(__name__)
+from authy_package.errors import DatabaseError
+
+logger = logging.getLogger("authy.db.enterprise_utils")
 
 T = TypeVar('T')
+
+#: Cryptographic RNG for retry jitter (never used for secrets).
+_JITTER_RNG = random.SystemRandom()
 
 
 class CircuitState(Enum):
@@ -44,11 +50,14 @@ class CircuitBreaker:
     async def call(self, func: Callable[..., T], *args, **kwargs) -> T:
         async with self._lock:
             if self.state == CircuitState.OPEN:
-                if time.time() - self.last_failure_time > self.config.recovery_timeout:
+                if time.monotonic() - self.last_failure_time > self.config.recovery_timeout:
                     logger.info("Circuit breaker entering HALF_OPEN state")
                     self.state = CircuitState.HALF_OPEN
                 else:
-                    raise ConnectionError("Circuit breaker is OPEN - service unavailable")
+                    raise DatabaseError(
+                        "Circuit breaker is OPEN - service unavailable",
+                        code="circuit_open",
+                    )
 
         try:
             result = await func(*args, **kwargs)
@@ -61,7 +70,7 @@ class CircuitBreaker:
         except self.config.expected_exceptions as e:
             async with self._lock:
                 self.failure_count += 1
-                self.last_failure_time = time.time()
+                self.last_failure_time = time.monotonic()
                 if self.failure_count >= self.config.failure_threshold:
                     logger.warning(f"Circuit breaker OPENING after {self.failure_count} failures")
                     self.state = CircuitState.OPEN
@@ -75,7 +84,7 @@ class RetryConfig:
     max_delay: float = 60.0
     exponential_base: float = 2.0
     jitter: bool = True
-    retryable_exceptions: tuple = (ConnectionError, TimeoutError)
+    retryable_exceptions: tuple = (DatabaseError, TimeoutError)
 
 
 def with_retry(config: RetryConfig = RetryConfig()):
@@ -99,8 +108,7 @@ def with_retry(config: RetryConfig = RetryConfig()):
                         config.max_delay
                     )
                     if config.jitter:
-                        import random
-                        delay += random.uniform(0, delay * 0.2)
+                        delay += _JITTER_RNG.uniform(0, delay * 0.2)
                     
                     logger.warning(
                         f"Retry {attempt + 1}/{config.max_retries} for {func.__name__} "
@@ -171,9 +179,13 @@ class ConnectionPool:
             conn = await self.get_connection()
             latency = (time.time() - start) * 1000
             
-            # Run a lightweight query/ping
+            # Run a lightweight query/ping. SQLAlchemy 2.x requires text().
             if hasattr(conn, 'execute'):
-                await conn.execute("SELECT 1")
+                try:
+                    from sqlalchemy import text
+                    await conn.execute(text("SELECT 1"))
+                except ImportError:
+                    await conn.execute("SELECT 1")
             elif hasattr(conn, 'command'):
                 await conn.command('ping')
             

@@ -1,7 +1,17 @@
 
 ## 🏢 Enterprise SSO (SAML 2.0 & OIDC)
 
-Authy Package now includes full enterprise SSO support with SAML 2.0 and OpenID Connect.
+Part of **authy-package 2.0** — see the root `README.md` for the overall
+package (features, extras, security configuration) and the note about the
+planned rename away from the "Authy" name.
+
+This guide covers the enterprise SSO subsystems rebuilt during the 2.0
+remediation against `docs/CONTRACTS.md`:
+
+- **SAML 2.0 Service Provider** — install with `pip install "authy-package[saml]"`
+  (lxml, xmlsec, python3-saml).
+- **OpenID Connect client** — install with `pip install "authy-package[oidc]"`
+  (no dependencies beyond the core; discovery + PKCE included).
 
 ### SAML 2.0 Service Provider
 

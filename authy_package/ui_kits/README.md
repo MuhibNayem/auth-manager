@@ -1,195 +1,164 @@
 # Authy UI Kits
 
-Pre-built, production-ready authentication components for modern frontend frameworks.
+Frontend building blocks that ship **inside the repository** as source files.
+Everything in this directory is plain source you copy into your own app —
+there is no published `authy-ui` npm package and no Python-rendered UI.
 
-## 📦 Available Kits
+## What is actually here
 
-### Svelte 5 (`/svelte`)
-- **LoginForm.svelte**: Complete login form with email/password, social login, magic links
-- **Features**: 
-  - Svelte 5 Runes compatible (`$state`, `$derived`)
-  - TypeScript support
-  - Customizable via props
-  - Built-in error handling
-  - Auto-redirect on success
-  - CSS variables for theming
-  - Accessible (ARIA compliant)
+| Path | What it is | Status |
+|------|------------|--------|
+| `react/admin-dashboard/` | React 18 + TypeScript + Vite + Tailwind admin dashboard (app **and** importable `AdminDashboard` component) | Working against admin API v1 (`/admin/api/v1`) and v2 (`/admin/v2`) |
+| `svelte/LoginForm.svelte` | End-user login form, Svelte 4-compatible syntax (compiles under Svelte 5; **no runes** are used) | Working, configurable endpoints |
+| `vue/LoginForm.vue` | End-user login form, Vue 3 `<script setup lang="ts">` | Working, configurable endpoints |
+| `react/__init__.py` | Python string templates (`REACT_COMPONENTS`) for CLI scaffolding / copy-paste only — **not** importable React components | Scaffold-only, token key aligned with the dashboard (`authy_admin_token`) |
 
-### Vue 3.x (`/vue`)
-- **LoginForm.vue**: Complete login form using Composition API
-- **Features**:
-  - `<script setup>` syntax
-  - TypeScript support
-  - Reactive state management
-  - Form validation
-  - Emit events for parent integration
-  - Scoped CSS with CSS variables
-  - Tailwind CSS ready
+There is no React `LoginForm`/`SignUpForm`/`MFAInput` component in this
+package. The React surface is the admin dashboard; the React templates in
+`react/__init__.py` are scaffolding strings.
 
-### React (`/react`)
-- **Components**: LoginForm, SignUpForm, MagicLinkButton, SocialLogin, MFAInput
-- **Features**:
-  - Hooks-based (useState, useEffect)
-  - TypeScript interfaces
-  - Controlled components
-  - Custom hooks for auth state
-  - Styled-components or Tailwind support
+---
 
-## 🎨 Theming
+## React admin dashboard (`react/admin-dashboard/`)
 
-All components use CSS variables for easy customization:
+Routes: `/login`, `/` (overview), `/users`, `/organizations`, `/security`,
+`/audit-logs`, `/sessions`, `/webhooks`, `/health`, `/settings`, `/rbac`,
+`/enterprise`.
 
-```css
-:root {
-  --authy-primary: #3b82f6;       /* Primary button color */
-  --authy-bg-color: #f3f4f6;      /* Background */
-  --authy-text-primary: #111827;  /* Main text */
-  --authy-text-secondary: #6b7280; /* Secondary text */
-  --authy-border: #d1d5db;        /* Border color */
-}
+- **Login** POSTs `{username_or_email, password}` as JSON to
+  `/admin/api/v1/auth/login` and stores the returned access token under
+  localStorage key **`authy_admin_token`**. `ProtectedRoute` requires token
+  presence **and** validates the JWT `exp` claim (client-side expiry check;
+  signature verification is the backend's job).
+- **API clients**: `apiClient` (baseURL `/admin/api/v1`) for dashboard,
+  users, orgs, audit, sessions, webhooks, health, reports; `apiClientV2`
+  (baseURL `/admin/v2`) for RBAC, API keys, branding, security analytics and
+  advanced audit search. v2 calls never go through the v1 client (that would
+  produce double-prefixed URLs).
+- **Health panel** renders live data from `GET /admin/api/v1/health` and
+  shows “—” when unavailable. Metric cards show “—” for period deltas because
+  the metrics endpoint does not return them (no fabricated numbers).
+
+### Run it
+
+```bash
+cd authy_package/ui_kits/react/admin-dashboard
+npm install
+npm run dev        # dev server on :3000, proxies /admin/api and /admin/v2 to :8000
+npm run build      # tsc typecheck + vite build (library mode)
+npm test           # vitest unit tests for the token helpers
+npm run lint       # eslint
 ```
 
-## 🚀 Usage Examples
+Styling uses Tailwind classes; the dev server loads `src/index.css`. When you
+embed the exported `AdminDashboard` component in your own app, provide
+Tailwind (or equivalent utility classes) yourself.
 
-### Svelte 5
+---
+
+## Svelte & Vue login forms
+
+Both forms POST `{"email", "password"}` as JSON to a configurable endpoint,
+emit `success` / `error` events with `{user, token}` from the response, and
+never store the token themselves — the host app decides what to do with it.
+
+### Endpoint configuration (the important part)
+
+The API base URL and the login path are **props with defaults**:
+
+| Prop | Type | Default | Meaning |
+|------|------|---------|---------|
+| `apiBaseUrl` | string | `''` (current origin) | Backend origin, e.g. `https://auth.example.com` |
+| `loginPath` | string | `/api/auth/login` | Login route on that backend |
+| `redirectUrl` | string | `''` | Post-login redirect; empty disables auto-redirect |
+| `showSocial` | boolean | `true` | Render Google/GitHub buttons |
+| `showMagicLink` | boolean | `true` | Render the magic-link button (only if `magicLinkUrl` set) |
+| `magicLinkUrl` | string | `''` | Magic-link page; link hidden when empty |
+| `forgotPasswordUrl` | string | `''` | "Forgot?" link; hidden when empty |
+| `signUpUrl` | string | `''` | Sign-up link; hidden when empty |
+| `titleLabel` / `submitLabel` | string | `'Welcome back'` / `'Sign In'` | Copy |
+
+The final login URL is `` `${apiBaseUrl}${loginPath}` ``. Optional links
+(magic link, forgot password, sign up) render **only when a URL is
+provided**, so the component never asserts routes your app does not
+implement. Social buttons navigate to
+`` `${apiBaseUrl}/api/auth/social/{provider}` `` — implement that route on
+your backend, or set `showSocial={false}`.
+
+### Svelte usage
+
 ```svelte
-<script>
-  import LoginForm from 'authy-package/ui_kits/svelte/LoginForm.svelte';
-  
-  function handleSuccess(event) {
-    console.log('User logged in:', event.detail.user);
-    // Store token, redirect, etc.
+<script lang="ts">
+  import LoginForm from './LoginForm.svelte';
+  function onSuccess(e: CustomEvent<{ user: unknown; token: string }>) {
+    localStorage.setItem('authy_admin_token', e.detail.token);
   }
 </script>
 
-<LoginForm 
-  actionUrl="/api/auth/login"
-  redirectUrl="/dashboard"
-  showSocial={true}
-  on:success={handleSuccess}
+<LoginForm
+  apiBaseUrl="https://auth.example.com"
+  loginPath="/api/auth/login"
+  showSocial={false}
+  on:success={onSuccess}
 />
 ```
 
-### Vue 3
+### Vue usage
+
 ```vue
 <script setup lang="ts">
-import LoginForm from 'authy-package/ui_kits/vue/LoginForm.vue';
+import LoginForm from './LoginForm.vue';
 
-function handleSuccess({ user, token }: { user: any; token: string }) {
-  console.log('Logged in:', user);
-  localStorage.setItem('token', token);
+function handleSuccess({ user, token }: { user: unknown; token: string }) {
+  localStorage.setItem('authy_admin_token', token);
 }
 </script>
 
 <template>
-  <LoginForm 
-    :actionUrl="'/api/auth/login'"
-    :redirectUrl="'/dashboard'"
-    :showSocial="true"
+  <LoginForm
+    api-base-url="https://auth.example.com"
+    login-path="/api/auth/login"
+    :show-social="false"
     @success="handleSuccess"
   />
 </template>
 ```
 
-### React
-```tsx
-import { LoginForm } from 'authy-package/ui_kits/react';
+### Theming
 
-function App() {
-  const handleSuccess = ({ user, token }) => {
-    console.log('Logged in:', user);
-  };
+Both components style via CSS variables (all optional, with fallbacks):
 
-  return (
-    <LoginForm 
-      actionUrl="/api/auth/login"
-      redirectUrl="/dashboard"
-      showSocial={true}
-      onSuccess={handleSuccess}
-    />
-  );
+```css
+:root {
+  --authy-primary: #3b82f6;
+  --authy-bg-color: #f3f4f6;
+  --authy-text-primary: #111827;
+  --authy-text-secondary: #6b7280;
+  --authy-border: #d1d5db;
 }
 ```
 
-## 🛠️ Installation
-
-Components are included in the `authy-package` Python distribution but can be copied directly to your frontend project:
-
-```bash
-# Copy Svelte components
-cp -r node_modules/authy-package/ui_kits/svelte src/components/auth/
-
-# Copy Vue components
-cp -r node_modules/authy-package/ui_kits/vue src/components/auth/
-
-# Copy React components
-cp -r node_modules/authy-package/ui_kits/react src/components/auth/
-```
-
-Or install via npm (future):
-```bash
-npm install authy-ui
-```
-
-## ✨ Features
-
-- **Zero Configuration**: Works out of the box
-- **Accessible**: WCAG 2.1 compliant
-- **Responsive**: Mobile-first design
-- **Customizable**: Props and CSS variables
-- **Type Safe**: Full TypeScript support
-- **Framework Agnostic**: Same look across Svelte, Vue, React
-- **Production Ready**: Error handling, loading states, validation
-
-## 📝 Component Props
-
-### LoginForm
-
-| Prop | Type | Default | Description |
-|------|------|---------|-------------|
-| `actionUrl` | string | `/api/auth/login` | API endpoint for login |
-| `redirectUrl` | string | `/dashboard` | Where to redirect on success |
-| `showSocial` | boolean | `true` | Show Google/GitHub buttons |
-| `showMagicLink` | boolean | `true` | Show magic link option |
-| `forgotPasswordUrl` | string | `/auth/forgot-password` | Link to password reset |
-| `signUpUrl` | string | `/auth/signup` | Link to registration |
-| `titleLabel` | string | `'Welcome back'` | Form title |
-| `submitLabel` | string | `'Sign In'` | Button text |
-
-## 🎯 Events
-
-### Svelte
-```svelte
-<LoginForm 
-  on:success={(e) => console.log(e.detail)}
-  on:error={(e) => console.error(e.detail)}
-/>
-```
-
-### Vue
-```vue
-<LoginForm 
-  @success="handleSuccess"
-  @error="handleError"
-/>
-```
-
-### React
-```tsx
-<LoginForm 
-  onSuccess={({ user, token }) => ...}
-  onError={({ message }) => ...}
-/>
-```
-
-## 🔒 Security
-
-- No sensitive data stored in components
-- CSRF protection via backend integration
-- Secure token handling (passed to parent, not stored in component)
-- Input sanitization
-- Rate limiting handled by backend
-
 ---
 
-For more information, see the main [README.md](../../README.md).
+## Backend expectations
+
+- Default user-facing paths (`/api/auth/login`, `/api/auth/social/{provider}`)
+  are **conventions**: point the props at whatever your auth server
+  implements. They are not guaranteed to exist on a stock authy server.
+- The admin dashboard speaks the routes defined in
+  `authy_package/admin/dashboard_api.py` (v1), `rbac_api.py` and
+  `dashboard_enterprise.py` (v2). The admin login endpoint
+  `POST /admin/api/v1/auth/login` is being added by the backend team; until
+  it exists, the login form reports the endpoint as unavailable.
+
+## Security notes
+
+- The admin dashboard keeps the admin JWT in `localStorage`
+  (`authy_admin_token`). This is a pragmatic SPA choice; if your threat model
+  requires it, host the dashboard behind a session-cookie proxy instead.
+- Login forms pass tokens to the parent via events and store nothing
+  themselves.
+
+See the main [README.md](../../README.md) for the package overview and
+[docs/CONTRACTS.md](../../../docs/CONTRACTS.md) for the binding API
+contracts.

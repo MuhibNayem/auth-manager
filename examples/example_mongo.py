@@ -1,126 +1,124 @@
+"""Traditional auth flow on MongoDB + Redis.
+
+Requires a running MongoDB and Redis, plus extras:
+
+    pip install "authy-package[mongodb]"
+
+Environment variables (no secrets are hardcoded):
+
+    AUTHY_JWT_SECRET      JWT signing secret (generate: python -c \\
+                          "import secrets; print(secrets.token_urlsafe(48))")
+    AUTHY_DB_URL          e.g. mongodb://localhost:27017
+    AUTHY_DB_NAME         MongoDB database name, e.g. authy_db
+    AUTHY_REDIS_URL       e.g. redis://localhost:6379
+    AUTHY_EMAIL_ENABLED   optional; "true" to exercise the password-reset email
+
+The demo password is generated per run; real applications collect
+passwords from users over a secure channel. The MongoDB adapter creates
+its own contract collections + indexes on connect (CONTRACTS.md §4).
+"""
+
 import asyncio
 import os
-from authy_package.core.auth_manager import TraditionalAuthManager
-from authy_package.cache.redis_cache import RedisCaching
-from authy_package.mfa.mfa_setup import MFAAuthManager
-from authy_package.db.mongodb import MongoDB
-from authy_package.utils.security import SecurityManager  
+import secrets
+import sys
+from pathlib import Path
 
-# Configuration
-REDIS_URL = "redis://localhost:6379"
-MONGO_URL = "mongodb://localhost:27017"
-DB_NAME = "your_db_name"
-COLLECTION_NAME = "users"
-MAILJET_API_KEY = os.getenv('MAILJET_API_KEY', 'your_mailjet_api_key')  # Set your API key or get from env
-MAILJET_API_SECRET = os.getenv('MAILJET_API_SECRET', 'your_mailjet_api_secret')  # Set your API secret or get from env
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
-# Initialize MongoDB and Redis Managers
-mongo_db = MongoDB(MONGO_URL, DB_NAME, COLLECTION_NAME)
-redis_cache = RedisCaching(REDIS_URL)
-mfa_auth_manager = MFAAuthManager(db=mongo_db)
+os.environ.setdefault("AUTHY_JWT_SECRET", secrets.token_urlsafe(48))
+os.environ.setdefault("AUTHY_ENV", "development")
+os.environ.setdefault("AUTHY_DB_TYPE", "mongodb")
 
-# Initialize SecurityManager with MongoDB, Redis, and Mailjet API credentials
-security_manager = SecurityManager(
-    db=mongo_db, 
-    cache=redis_cache, 
-    api_key=MAILJET_API_KEY, 
-    api_secret=MAILJET_API_SECRET
+from authy_package.cache.redis_cache import RedisCache     # noqa: E402
+from authy_package.config import AuthConfig                # noqa: E402
+from authy_package.core.auth_manager import (              # noqa: E402
+    TraditionalAuthManager,
 )
+from authy_package.db.mongodb import MongoDB               # noqa: E402
+from authy_package.errors import AuthyError                # noqa: E402
+from authy_package.mfa.mfa_setup import MFAAuthManager     # noqa: E402
+from authy_package.utils.security import SecurityManager   # noqa: E402
 
-# Initialize AuthManager with SecurityManager, MongoDB, Redis, MFA, and SecurityManager
-auth_manager = TraditionalAuthManager(
-    db=mongo_db, 
-    cache=redis_cache, 
-    mfa_manager=mfa_auth_manager, 
-    security_manager=security_manager  
-)
+DEMO_PASSWORD = secrets.token_urlsafe(16)
+DEMO_USERNAME = "janedoe"
+DEMO_EMAIL = "jane@example.com"
 
-async def main():
-    # 1. Register a user
+
+async def main() -> None:
+    config = AuthConfig.from_env()
+    config.validate()
+
+    db = MongoDB(
+        {
+            "url": os.environ["AUTHY_DB_URL"],
+            "db_name": os.environ.get("AUTHY_DB_NAME", "authy_db"),
+        }
+    )
+    cache = RedisCache(os.environ.get("AUTHY_REDIS_URL", "redis://localhost:6379"))
+    await db.connect()
+
     try:
-        response = await auth_manager.register_user(
-            username="janedoe", 
-            password="securepassword", 
-            email="jane@example.com"
+        security = SecurityManager(db=db, cache=cache, config=config)
+        mfa = MFAAuthManager(db=db, cache=cache, config=config)
+        auth = TraditionalAuthManager(
+            db=db,
+            config=config,
+            cache=cache,
+            mfa_manager=mfa,
+            security_manager=security,
         )
-        print("MongoDB Registration Response:", response)
-    except ValueError as e:
-        print("MongoDB Registration Error:", str(e))
 
-    # 2. Log in the user
-    try:
-        login_response = await auth_manager.login_user(
-            username="janedoe", 
-            password="securepassword"
+        # 1. Register.
+        try:
+            response = await auth.register_user(
+                username=DEMO_USERNAME, email=DEMO_EMAIL, password=DEMO_PASSWORD
+            )
+            print("MongoDB registration:", response.get("message", response))
+        except AuthyError as exc:
+            print("MongoDB registration error:", exc)
+
+        # 2. Login -> {"access_token", "refresh_token"}.
+        tokens = await auth.login_user(
+            username=DEMO_USERNAME, password=DEMO_PASSWORD
         )
-        print("MongoDB Login Response:", login_response)
-    except ValueError as e:
-        print("MongoDB Login Error:", str(e))
+        print("MongoDB login: received access + refresh tokens")
 
-    # 3. Refresh the token
-    try:
-        refresh_response = await auth_manager.refresh_token(
-            refresh_token=login_response['refresh_token']
+        # 3. Refresh (rotates the pair; the old refresh token is invalidated).
+        new_tokens = await auth.refresh_token(refresh_token=tokens["refresh_token"])
+        print("MongoDB refresh: rotated token pair")
+
+        # 4. Logout.
+        await auth.logout_user(access_token=new_tokens["access_token"])
+        print("MongoDB logout: session revoked")
+
+        # 5. MFA enrollment: begin -> confirm with a real TOTP code.
+        pending = await auth.enable_mfa(username=DEMO_USERNAME)
+        print(
+            "MFA enrollment started; render otpauth_url as a QR code:",
+            pending.get("otpauth_url", ""),
         )
-        print("MongoDB Token Refresh Response:", refresh_response)
-    except ValueError as e:
-        print("MongoDB Refresh Error:", str(e))
+        try:
+            import pyotp
 
-    # 4. Log out the user
-    try:
-        await auth_manager.logout_user(
-            access_token=login_response['access_token'],
-            username="janedoe"
-        )
-        print("MongoDB User logged out successfully.")
-    except ValueError as e:
-        print("MongoDB Logout Error:", str(e))
+            code = pyotp.TOTP(pending["mfa_secret"]).now()
+            confirmed = await auth.confirm_mfa(code, username=DEMO_USERNAME)
+            print("MFA confirmed:", confirmed.get("message", confirmed))
+        except ImportError:
+            print("pyotp not installed; skipping MFA confirmation")
 
-    # 5. Enable MFA
-    try:
-        mfa_response = await auth_manager.enable_mfa(username="janedoe")
-        print("MFA Enable Response:", mfa_response)
-    except ValueError as e:
-        print("MFA Enable Error:", str(e))
+        # 6. Password reset (only when an email provider is configured).
+        if os.environ.get("AUTHY_EMAIL_ENABLED", "").lower() == "true":
+            await auth.request_password_reset(email=DEMO_EMAIL)
+            print("Password reset email requested (token delivered by email only)")
+        else:
+            print("Skipping password reset (set AUTHY_EMAIL_ENABLED=true to try it)")
+    finally:
+        await cache.close()
+        await db.close()
 
-    # 6. Reconfigure MFA
-    try:
-        reconfigure_mfa_response = await auth_manager.reconfigure_mfa(username="janedoe")
-        print("MFA Reconfigure Response:", reconfigure_mfa_response)
-    except ValueError as e:
-        print("MFA Reconfigure Error:", str(e))
 
-    # 7. Generate and send password reset link
-    try:
-        reset_link_response = await auth_manager.request_password_reset(
-            email="jane@example.com", 
-            sender_email="noreply@example.com", 
-            sender_name="Support"
-        )
-        print("Password Reset Link Response:", reset_link_response)
-    except ValueError as e:
-        print("Password Reset Link Error:", str(e))
-
-    # 8. Validate reset token (assume we get this token from the user's email)
-    try:
-        # Replace 'token' with the actual token received from email
-        token = "dummy_reset_token"
-        user_identifier = await auth_manager.security_manager.validate_reset_token(token)
-        print("Reset Token Validation Response:", user_identifier)
-    except ValueError as e:
-        print("Reset Token Validation Error:", str(e))
-
-    # 9. Update password
-    try:
-        new_password_response = await auth_manager.reset_password(
-            email="jane@example.com", 
-            token="dummy_reset_token", 
-            new_password="newsecurepassword"
-        )
-        print("Password Update Response:", new_password_response)
-    except ValueError as e:
-        print("Password Update Error:", str(e))
-
-# Run the main function
 if __name__ == "__main__":
     asyncio.run(main())

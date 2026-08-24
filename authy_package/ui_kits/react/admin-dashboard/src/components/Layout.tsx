@@ -1,7 +1,8 @@
 import React from 'react';
 import { 
   Users, Building2, Shield, Activity, Settings, LogOut, 
-  Menu, Bell, Search, ChevronDown, Key, FileText, Webhook, Heart 
+  Menu, Bell, Search, ChevronDown, Key, FileText, Webhook, Heart,
+  Sparkles, UserCog 
 } from 'lucide-react';
 import { useUIStore, useAuthStore } from '../store';
 import clsx from 'clsx';
@@ -26,6 +27,8 @@ export const Sidebar: React.FC = () => {
     { icon: <Key size={20} />, label: 'Sessions', href: '/sessions' },
     { icon: <Webhook size={20} />, label: 'Webhooks', href: '/webhooks' },
     { icon: <Heart size={20} />, label: 'Health', href: '/health' },
+    { icon: <UserCog size={20} />, label: 'RBAC', href: '/rbac' },
+    { icon: <Sparkles size={20} />, label: 'Enterprise', href: '/enterprise' },
     { icon: <Settings size={20} />, label: 'Settings', href: '/settings' },
   ];
 

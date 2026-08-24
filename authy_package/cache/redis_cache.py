@@ -1,119 +1,135 @@
-import aioredis as redis
-import time
-import hashlib
-from typing import Optional, Dict, Any
+"""Redis cache implementation on ``redis.asyncio`` (CONTRACTS.md §3).
+
+Replaces the legacy ``aioredis``-based ``RedisCaching`` class with the exact
+:class:`~authy_package.cache.abstract_cache.AbstractCache` primitive surface.
+"""
+
+from __future__ import annotations
+
+import logging
+from typing import Any, Dict, List, Optional
 
 from authy_package.cache.abstract_cache import AbstractCache
 
+logger = logging.getLogger("authy.cache.redis")
 
-class RedisCaching(AbstractCache):
-    """
-    Redis-based caching implementation for token storage.
-    
-    Features:
-    - Async Redis operations
-    - JWT and social token storage
-    - Automatic expiration
-    
-    Usage:
-        cache = RedisCaching(redis_url="redis://localhost:6379")
-        access_token, refresh_token = await cache.create_token_pair("user123")
-    """
-    
-    def __init__(self, redis_url: str = "redis://localhost:6379", 
-                 token_expiration_time: int = 3600, 
-                 refresh_token_expiration_time: int = 604800, 
-                 id_token_expiration_time: int = 3600):
-        self.redis = redis.from_url(redis_url)
-        self.TOKEN_EXPIRATION_TIME = token_expiration_time
-        self.REFRESH_TOKEN_EXPIRATION_TIME = refresh_token_expiration_time
-        self.ID_TOKEN_EXPIRATION_TIME = id_token_expiration_time
+__all__ = ["RedisCache"]
 
-    async def create_token_pair(self, identifier: str):
-        access_token = self._generate_token(identifier)
-        refresh_token = self._generate_token(identifier)
-        await self.redis.set(access_token, identifier, ex=self.TOKEN_EXPIRATION_TIME)
-        await self.redis.set(refresh_token, identifier, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
-        return access_token, refresh_token
 
-    def _generate_token(self, identifier: str) -> str:
-        return hashlib.sha256(f"{identifier}_{time.time()}".encode()).hexdigest()
+class RedisCache(AbstractCache):
+    """Redis-backed async cache using ``redis.asyncio`` (NOT aioredis)."""
 
-    async def delete_access_token(self, access_token: str):
-        await self.redis.delete(access_token)
+    def __init__(
+        self,
+        url: str = "redis://localhost:6379",
+        *,
+        client: Optional[Any] = None,
+    ) -> None:
+        """Create the cache.
 
-    async def delete_refresh_token(self, identifier: str):
-        refresh_token = f"refresh_{identifier}"
-        await self.redis.delete(refresh_token)
+        Args:
+            url: Redis connection URL (used when ``client`` is not given).
+            client: Optional pre-built ``redis.asyncio.Redis`` client; the
+                caller retains ownership of its lifecycle in that case.
 
-    async def store_social_token(self, identifier: str, access_token: str, refresh_token: str = None, id_token: str = None, exp: int = None):
-        await self.redis.set(f"{identifier}_access_token", access_token, ex=exp or self.TOKEN_EXPIRATION_TIME)
-        if refresh_token:
-            await self.redis.set(f"{identifier}_refresh_token", refresh_token, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
-        if id_token:
-            await self.redis.set(f"{identifier}_id_token", id_token, ex=exp or self.ID_TOKEN_EXPIRATION_TIME)
+        Raises:
+            ImportError: When the ``redis`` package is unavailable (§0.9).
+        """
+        if client is None:
+            try:
+                from redis import asyncio as redis_asyncio
+            except ImportError as exc:
+                raise ImportError(
+                    "RedisCache requires the 'redis' package (redis.asyncio)"
+                ) from exc
+            self._client = redis_asyncio.from_url(url, decode_responses=True)
+            self._owns_client = True
+        else:
+            self._client = client
+            self._owns_client = False
 
-    async def update_social_token(self, identifier: str, new_access_token: str, new_refresh_token: str = None, id_token: str = None, exp: int = None):
-        await self.redis.set(f"{identifier}_access_token", new_access_token, ex=self.TOKEN_EXPIRATION_TIME)
-        if new_refresh_token:
-            await self.redis.set(f"{identifier}_refresh_token", new_refresh_token, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
-        if id_token:
-            await self.redis.set(f"{identifier}_id_token", id_token, ex=exp or self.REFRESH_TOKEN_EXPIRATION_TIME)
-        
-        return {
-            "access_token": new_access_token,
-            "refresh_token": new_refresh_token,
-            "expires_in": self.TOKEN_EXPIRATION_TIME,
-            "refresh_expires_in": self.REFRESH_TOKEN_EXPIRATION_TIME if new_refresh_token else None
-        }
+    @property
+    def client(self) -> Any:
+        """The underlying ``redis.asyncio.Redis`` client."""
+        return self._client
 
-    async def validate_access_token(self, access_token: str):
-        identifier = await self.redis.get(access_token)
-        if identifier:
-            return identifier.decode('utf-8')
-        return None
+    # -- strings -----------------------------------------------------------
 
-    async def validate_refresh_token(self, refresh_token: str):
-        identifier = await self.redis.get(refresh_token)
-        if identifier:
-            # Ensure token has not expired
-            token_creation_time = int(refresh_token.split("_")[-1])
-            if time.time() - token_creation_time > self.REFRESH_TOKEN_EXPIRATION_TIME:
-                await self.delete_refresh_token(identifier.decode('utf-8'))
-                return None
-            return identifier.decode('utf-8')
-        return None
-    
-    async def retrieve_access_token(self, identifier: str):
-        access_token = await self.redis.get(f"{identifier}_access_token")
-        if access_token:
-            return access_token.decode('utf-8')
-        return None
-    
-    async def create_refresh_token_for_access_token(self, access_token: str):
-        identifier = await self.validate_access_token(access_token)
-        if not identifier:
-            raise ValueError("Invalid or expired access token.")
+    async def get(self, key: str) -> Optional[str]:
+        return await self._client.get(key)
 
-        refresh_token = self._generate_token(identifier)
-        access_token = self._generate_token(identifier)
+    async def set(self, key: str, value: str, *, ttl_seconds: Optional[int] = None) -> None:
+        if not isinstance(value, str):
+            raise ValueError(f"value must be a str, got {type(value).__name__}")
+        if ttl_seconds is None:
+            await self._client.set(key, value)
+        else:
+            if ttl_seconds <= 0:
+                raise ValueError("ttl_seconds must be positive")
+            await self._client.set(key, value, ex=ttl_seconds)
 
-        await self.redis.set(access_token, identifier, ex=self.TOKEN_EXPIRATION_TIME)
-        await self.redis.set(refresh_token, identifier, ex=self.REFRESH_TOKEN_EXPIRATION_TIME)
-        return access_token, refresh_token
-    
-    # Store a reset change password token with an expiration time
-    async def store_reset_token(self, email: str, reset_token: str, expiration: int = 900):
-        """Store the password reset token for the user."""
-        await self.redis.set(f"reset_token_{email}", reset_token, ex=expiration)
+    async def delete(self, key: str) -> bool:
+        return bool(await self._client.delete(key))
 
-    # Retrieve the reset change password token from Redis
-    async def get_reset_token(self, email: str) -> str:
-        """Retrieve the reset token for the user."""
-        token = await self.redis.get(f"reset_token_{email}")
-        return token.decode('utf-8') if token else None
+    async def exists(self, key: str) -> bool:
+        return bool(await self._client.exists(key))
 
-    # Delete the reset change password token after successful password update
-    async def delete_reset_token(self, email: str):
-        """Delete the reset token after the password has been reset."""
-        await self.redis.delete(f"reset_token_{email}")
+    # -- counters / expiry ----------------------------------------------------
+
+    async def incr(self, key: str) -> int:
+        return int(await self._client.incr(key))
+
+    async def expire(self, key: str, ttl_seconds: int) -> bool:
+        if ttl_seconds <= 0:
+            raise ValueError("ttl_seconds must be positive")
+        return bool(await self._client.expire(key, ttl_seconds))
+
+    async def ttl(self, key: str) -> int:
+        # Redis natively returns -2 for missing keys and -1 for no TTL.
+        return int(await self._client.ttl(key))
+
+    # -- lists -----------------------------------------------------------------
+
+    async def lpush(self, key: str, *values: str) -> int:
+        if not values:
+            raise ValueError("lpush requires at least one value")
+        return int(await self._client.lpush(key, *values))
+
+    async def rpop(self, key: str) -> Optional[str]:
+        return await self._client.rpop(key)
+
+    async def lrange(self, key: str, start: int, stop: int) -> List[str]:
+        return list(await self._client.lrange(key, start, stop))
+
+    # -- hashes -----------------------------------------------------------------
+
+    async def hset(self, key: str, mapping: Dict[str, str]) -> None:
+        if not isinstance(mapping, dict):
+            raise ValueError("mapping must be a dict")
+        if mapping:
+            await self._client.hset(key, mapping=mapping)
+
+    async def hgetall(self, key: str) -> Dict[str, str]:
+        return dict(await self._client.hgetall(key))
+
+    async def hdel(self, key: str, *fields: str) -> int:
+        if not fields:
+            return 0
+        return int(await self._client.hdel(key, *fields))
+
+    # -- lifecycle ---------------------------------------------------------------
+
+    async def close(self) -> None:
+        if not self._owns_client:
+            return
+        close = getattr(self._client, "aclose", None) or getattr(self._client, "close")
+        result = close()
+        if result is not None:
+            await result
+
+    async def health_check(self) -> bool:
+        try:
+            return bool(await self._client.ping())
+        except Exception as exc:  # noqa: BLE001 - health check must not raise
+            logger.warning("Redis health check failed: %s", exc)
+            return False

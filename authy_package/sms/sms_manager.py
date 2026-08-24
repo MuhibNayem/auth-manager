@@ -1,285 +1,323 @@
-"""
-SMS Manager for Authy Package.
+"""SMS verification manager (CONTRACTS.md §0, §3, §3.1).
 
-Handles verification code generation, sending, and validation with rate limiting,
-expiration, and attempt tracking.
+Handles verification-code generation, delivery and verification:
+
+- Codes are generated with :mod:`secrets` (cryptographically secure; §0.3).
+- Verification compares sha256 digests via :func:`hmac.compare_digest` (§0.4);
+  only the code hash is persisted, never the plaintext code.
+- Send rate limiting is a FIXED window: the counter TTL is set exactly once,
+  on the first increment of the window (no sliding reset).
+- Verification attempts are capped; the record is deleted once exhausted.
+- Code lifetime comes from configuration (``expiration_seconds``).
+- State persists under the §3.1 cache key ``authy:sms:{phone}`` as JSON:
+  ``{code_hash, attempts, expires_at, last_sent_at}``.
 
 Usage:
-    from authy_package.sms import SMSManager, TwilioProvider
-    
-    # Setup provider
     provider = TwilioProvider.from_env()
-    
-    # Create manager with cache (Redis recommended)
-    sms_manager = SMSManager(
-        provider=provider,
-        cache=redis_cache_instance,
-        code_length=6,
-        expiration_seconds=300,
-        max_attempts=3
-    )
-    
-    # Send verification code
-    result = await sms_manager.send_verification_code("+1234567890")
-    
-    # Verify code
-    is_valid = await sms_manager.verify_code("+1234567890", "123456")
+    manager = SMSManager(provider=provider, cache=cache)  # AbstractCache
+    await manager.send_verification_code("+15551234567")
+    result = await manager.verify_code("+15551234567", "123456")
 """
 
-import random
+from __future__ import annotations
+
+import hashlib
+import hmac
+import logging
+import secrets
 import string
-from typing import Optional, Dict, Any
-from datetime import datetime, timedelta
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional
+
+from authy_package.cache import AbstractCache, InMemoryCache
+from authy_package.config import SMSConfig
+from authy_package.errors import ProviderError
 
 from .abstract_provider import (
     AbstractSMSProvider,
-    SMSResponse,
-    SMSProviderError,
-    VerificationCodeExpiredError,
     InvalidVerificationCodeError,
-    TooManyAttemptsError
+    SMSProviderError,
+    TooManyAttemptsError,
+    VerificationCodeExpiredError,
 )
+
+logger = logging.getLogger("authy.sms.manager")
+
+__all__ = ["SMSManager"]
+
+_DIGITS = string.digits
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
+
+
+def _hash_code(code: str) -> str:
+    """sha256 hex digest of a verification code (codes never stored raw)."""
+    return hashlib.sha256(code.encode("utf-8")).hexdigest()
 
 
 class SMSManager:
-    """
-    Manages SMS verification codes with security features.
-    
+    """Manages SMS verification codes with security controls.
+
     Features:
-    - Random code generation (configurable length)
-    - Code expiration
-    - Attempt limiting to prevent brute force
-    - Rate limiting per phone number
-    - Template customization
-    - Delivery tracking
+    - CSPRNG code generation (configurable length)
+    - Hashed-at-rest codes with constant-time comparison
+    - Code expiration from configuration
+    - Verification attempt cap
+    - Fixed-window send rate limiting (TTL set once per window)
+    - Delivery status passthrough to the provider
     """
-    
+
     DEFAULT_TEMPLATE = "Your verification code is: {code}. Valid for {minutes} minutes."
-    
+
     def __init__(
         self,
         provider: AbstractSMSProvider,
-        cache: Optional[Any] = None,
+        cache: Optional[AbstractCache] = None,
+        *,
         code_length: int = 6,
-        expiration_seconds: int = 300,  # 5 minutes
+        expiration_seconds: int = 300,
         max_attempts: int = 3,
         rate_limit_window_seconds: int = 60,
         max_sends_per_window: int = 3,
-        template: Optional[str] = None
-    ):
+        template: Optional[str] = None,
+    ) -> None:
+        """Initialize the manager.
+
+        Args:
+            provider: SMS provider instance (Twilio, AWS SNS, ...).
+            cache: AbstractCache implementation; defaults to a private
+                :class:`InMemoryCache` (single-process only).
+            code_length: Length of the numeric verification code.
+            expiration_seconds: Code lifetime in seconds.
+            max_attempts: Maximum verification attempts per code.
+            rate_limit_window_seconds: Fixed window for send rate limiting.
+            max_sends_per_window: Maximum sends allowed per window.
+            template: Message template with ``{code}``/``{minutes}`` fields.
         """
-        Initialize SMS Manager.
-        
-        :param provider: SMS provider instance (Twilio, AWS SNS, etc.)
-        :param cache: Cache instance for storing codes (Redis recommended)
-        :param code_length: Length of verification code (default: 6)
-        :param expiration_seconds: Code expiration time in seconds (default: 300)
-        :param max_attempts: Maximum verification attempts per code
-        :param rate_limit_window_seconds: Time window for rate limiting
-        :param max_sends_per_window: Maximum codes that can be sent per window
-        :param template: Message template (use {code} and {minutes} placeholders)
-        """
+        if code_length < 4:
+            raise ValueError("code_length must be at least 4")
+        if expiration_seconds <= 0:
+            raise ValueError("expiration_seconds must be positive")
+        if max_attempts <= 0:
+            raise ValueError("max_attempts must be positive")
+        if rate_limit_window_seconds <= 0:
+            raise ValueError("rate_limit_window_seconds must be positive")
+        if max_sends_per_window <= 0:
+            raise ValueError("max_sends_per_window must be positive")
+
         self.provider = provider
-        self.cache = cache
+        self.cache: AbstractCache = cache if cache is not None else InMemoryCache()
         self.code_length = code_length
         self.expiration_seconds = expiration_seconds
         self.max_attempts = max_attempts
         self.rate_limit_window_seconds = rate_limit_window_seconds
         self.max_sends_per_window = max_sends_per_window
         self.template = template or self.DEFAULT_TEMPLATE
-        
-        # In-memory fallback if no cache provided
-        self._memory_store: Dict[str, Dict[str, Any]] = {}
-    
+
+    @classmethod
+    def from_config(
+        cls,
+        provider: AbstractSMSProvider,
+        cache: Optional[AbstractCache],
+        config: SMSConfig,
+    ) -> "SMSManager":
+        """Build a manager from an :class:`~authy_package.config.SMSConfig`."""
+        return cls(
+            provider,
+            cache,
+            code_length=config.code_length,
+            expiration_seconds=config.expiration_seconds,
+            max_attempts=config.max_attempts,
+            rate_limit_window_seconds=config.rate_limit_window_seconds,
+            max_sends_per_window=config.max_sends_per_window,
+        )
+
+    # -- key schema (§3.1) ----------------------------------------------------
+
+    @staticmethod
+    def _state_key(phone: str) -> str:
+        """State record key: ``authy:sms:{phone}`` (§3.1)."""
+        return f"authy:sms:{phone}"
+
+    @staticmethod
+    def _rate_limit_key(phone: str) -> str:
+        """Fixed-window send counter key (§3.1 ratelimit namespace)."""
+        return f"authy:ratelimit:sms:{phone}"
+
+    # -- code generation --------------------------------------------------------
+
     def _generate_code(self) -> str:
-        """Generate a random numeric verification code."""
-        return ''.join(random.choices(string.digits, k=self.code_length))
-    
-    def _get_cache_key(self, phone: str, suffix: str = "") -> str:
-        """Generate cache key for phone number."""
-        base = f"sms:verify:{phone}"
-        return f"{base}:{suffix}" if suffix else base
-    
-    async def _store_in_cache(self, key: str, value: Any, expiration: int):
-        """Store value in cache or memory."""
-        if self.cache:
-            await self.cache.set(key, str(value), expire=expiration)
-        else:
-            self._memory_store[key] = {
-                "value": value,
-                "expires_at": datetime.now() + timedelta(seconds=expiration)
-            }
-    
-    async def _get_from_cache(self, key: str) -> Optional[str]:
-        """Get value from cache or memory."""
-        if self.cache:
-            return await self.cache.get(key)
-        else:
-            record = self._memory_store.get(key)
-            if record and datetime.now() < record["expires_at"]:
-                return record["value"]
-            return None
-    
-    async def _delete_from_cache(self, key: str):
-        """Delete value from cache or memory."""
-        if self.cache:
-            await self.cache.delete(key)
-        else:
-            self._memory_store.pop(key, None)
-    
-    async def _check_rate_limit(self, phone: str) -> bool:
-        """Check if phone number is rate limited. Returns True if allowed."""
-        key = self._get_cache_key(phone, "rate_limit")
-        count = await self._get_from_cache(key)
-        
-        if count is None:
-            # First send in this window
-            await self._store_in_cache(key, 1, self.rate_limit_window_seconds)
-            return True
-        
-        current_count = int(count)
-        if current_count >= self.max_sends_per_window:
-            return False
-        
-        # Increment counter
-        await self._store_in_cache(key, current_count + 1, self.rate_limit_window_seconds)
-        return True
-    
+        """Generate a cryptographically secure numeric code (§0.3)."""
+        return "".join(secrets.choice(_DIGITS) for _ in range(self.code_length))
+
+    # -- rate limiting (fixed window) ---------------------------------------------
+
+    async def _check_send_rate_limit(self, phone: str) -> None:
+        """Enforce the fixed-window send limit for ``phone``.
+
+        The counter is created with ``incr`` and its TTL is set ONCE, on the
+        first increment of the window. Later increments never touch the TTL,
+        so the window cannot slide forward.
+
+        Raises:
+            TooManyAttemptsError: When the window's send budget is exhausted.
+        """
+        key = self._rate_limit_key(phone)
+        count = await self.cache.incr(key)
+        if count == 1:
+            await self.cache.expire(key, self.rate_limit_window_seconds)
+        if count > self.max_sends_per_window:
+            remaining = await self.cache.ttl(key)
+            retry_after = remaining if remaining > 0 else self.rate_limit_window_seconds
+            logger.warning("SMS send rate limit exceeded for %s", phone)
+            raise TooManyAttemptsError(
+                f"Too many verification codes sent. Try again in {retry_after} seconds.",
+                retry_after=retry_after,
+            )
+
+    # -- public API -----------------------------------------------------------------
+
     async def send_verification_code(
         self,
         phone: str,
-        custom_message: Optional[str] = None
+        custom_message: Optional[str] = None,
     ) -> Dict[str, Any]:
+        """Send a verification code to ``phone`` (E.164 format).
+
+        Returns:
+            Dict with ``success`` and provider metadata. On upstream provider
+            failure the dict carries ``success=False`` and the provider error
+            message (delivery passthrough); no state is stored.
+
+        Raises:
+            TooManyAttemptsError: When the send rate limit is exceeded.
+            ValueError: When ``phone`` is empty.
         """
-        Send a verification code to the specified phone number.
-        
-        :param phone: Phone number in E.164 format (e.g., +1234567890)
-        :param custom_message: Optional custom message (overrides template)
-        :return: Dictionary with success status and metadata
-        :raises: TooManyAttemptsError if rate limited
-        """
-        # Check rate limit
-        if not await self._check_rate_limit(phone):
-            raise TooManyAttemptsError(
-                f"Too many verification codes sent. Try again in {self.rate_limit_window_seconds} seconds."
-            )
-        
-        # Generate code
+        if not phone or not phone.strip():
+            raise ValueError("phone must be a non-empty E.164 number")
+
+        await self._check_send_rate_limit(phone)
+
         code = self._generate_code()
-        
-        # Prepare message
         if custom_message:
             message = custom_message.replace("{code}", code)
         else:
             message = self.template.format(
-                code=code,
-                minutes=self.expiration_seconds // 60
+                code=code, minutes=max(1, self.expiration_seconds // 60)
             )
-        
-        # Send SMS
-        response = await self.provider.send_sms(to=phone, body=message)
-        
-        if response.success:
-            # Store code with expiration
-            code_key = self._get_cache_key(phone, "code")
-            await self._store_in_cache(code_key, code, self.expiration_seconds)
-            
-            # Reset attempt counter
-            attempts_key = self._get_cache_key(phone, "attempts")
-            await self._store_in_cache(attempts_key, 0, self.expiration_seconds)
-            
-            return {
-                "success": True,
-                "message_id": response.message_id,
-                "provider": self.provider.provider_name,
-                "expires_in": self.expiration_seconds,
-                "phone": phone
-            }
-        else:
+
+        try:
+            response = await self.provider.send_sms(to=phone, body=message)
+        except ProviderError as exc:
+            logger.warning("SMS provider failure for %s: %s", phone, exc.message)
             return {
                 "success": False,
-                "error": response.error_message,
-                "provider": self.provider.provider_name
+                "error": exc.message,
+                "provider": self.provider.provider_name,
             }
-    
+
+        if not response.success:
+            return {
+                "success": False,
+                "error": response.error_message or "unknown provider error",
+                "provider": self.provider.provider_name,
+            }
+
+        now = _utcnow()
+        record = {
+            "code_hash": _hash_code(code),
+            "attempts": 0,
+            "expires_at": (
+                now.timestamp() + self.expiration_seconds
+            ),
+            "last_sent_at": now.isoformat(),
+        }
+        await self.cache.set_json(
+            self._state_key(phone), record, ttl_seconds=self.expiration_seconds
+        )
+
+        return {
+            "success": True,
+            "message_id": response.message_id,
+            "provider": self.provider.provider_name,
+            "expires_in": self.expiration_seconds,
+            "phone": phone,
+        }
+
     async def verify_code(self, phone: str, code: str) -> Dict[str, Any]:
+        """Verify a user-supplied code for ``phone``.
+
+        Raises:
+            VerificationCodeExpiredError: No live code exists for ``phone``.
+            TooManyAttemptsError: The attempt cap was reached.
+            InvalidVerificationCodeError: The code does not match.
         """
-        Verify a code entered by the user.
-        
-        :param phone: Phone number in E.164 format
-        :param code: Verification code to check
-        :return: Dictionary with verification result
-        :raises: VerificationCodeExpiredError if code expired
-        :raises: InvalidVerificationCodeError if code is wrong
-        :raises: TooManyAttemptsError if max attempts exceeded
-        """
-        code_key = self._get_cache_key(phone, "code")
-        attempts_key = self._get_cache_key(phone, "attempts")
-        
-        # Get stored code
-        stored_code = await self._get_from_cache(code_key)
-        
-        if stored_code is None:
+        state_key = self._state_key(phone)
+        record = await self.cache.get_json(state_key)
+
+        if not record or not record.get("code_hash"):
             raise VerificationCodeExpiredError(
-                "Verification code has expired or doesn't exist. Please request a new one."
+                "Verification code has expired or doesn't exist. "
+                "Please request a new one."
             )
-        
-        # Check attempts
-        attempts_str = await self._get_from_cache(attempts_key)
-        attempts = int(attempts_str) if attempts_str else 0
-        
+
+        expires_at = record.get("expires_at")
+        if expires_at is not None and _utcnow().timestamp() >= float(expires_at):
+            await self.cache.delete(state_key)
+            raise VerificationCodeExpiredError(
+                "Verification code has expired. Please request a new one."
+            )
+
+        attempts = int(record.get("attempts", 0))
         if attempts >= self.max_attempts:
-            # Delete code to prevent further attempts
-            await self._delete_from_cache(code_key)
+            await self.cache.delete(state_key)
             raise TooManyAttemptsError(
-                f"Maximum verification attempts ({self.max_attempts}) exceeded. Please request a new code."
+                f"Maximum verification attempts ({self.max_attempts}) exceeded. "
+                "Please request a new code.",
+                retry_after=self.expiration_seconds,
             )
-        
-        # Verify code
-        if code != stored_code:
-            # Increment attempts
-            await self._store_in_cache(
-                attempts_key,
-                attempts + 1,
-                self.expiration_seconds
-            )
-            
-            remaining_attempts = self.max_attempts - attempts - 1
+
+        stored_hash = str(record["code_hash"])
+        if not hmac.compare_digest(_hash_code(code), stored_hash):
+            attempts += 1
+            record["attempts"] = attempts
+            # Preserve the remaining lifetime of the original window.
+            remaining = await self.cache.ttl(state_key)
+            ttl = remaining if remaining > 0 else self.expiration_seconds
+            await self.cache.set_json(state_key, record, ttl_seconds=ttl)
+
+            if attempts >= self.max_attempts:
+                await self.cache.delete(state_key)
+                raise TooManyAttemptsError(
+                    f"Maximum verification attempts ({self.max_attempts}) exceeded. "
+                    "Please request a new code.",
+                    retry_after=self.expiration_seconds,
+                )
+
+            remaining_attempts = self.max_attempts - attempts
             raise InvalidVerificationCodeError(
                 f"Invalid verification code. {remaining_attempts} attempts remaining."
             )
-        
-        # Success! Clean up
-        await self._delete_from_cache(code_key)
-        await self._delete_from_cache(attempts_key)
-        
-        return {
-            "success": True,
-            "verified": True,
-            "phone": phone
-        }
-    
+
+        # Success: single-use code, remove all state for this phone.
+        await self.cache.delete(state_key)
+        return {"success": True, "verified": True, "phone": phone}
+
     async def resend_code(self, phone: str) -> Dict[str, Any]:
-        """
-        Resend a verification code to the same phone number.
-        
-        This generates a new code and invalidates the previous one.
-        
-        :param phone: Phone number in E.164 format
-        :return: Dictionary with send result
-        """
-        # Invalidate existing code
-        code_key = self._get_cache_key(phone, "code")
-        await self._delete_from_cache(code_key)
-        
-        # Send new code
+        """Send a fresh code, invalidating any previous one."""
+        await self.cache.delete(self._state_key(phone))
         return await self.send_verification_code(phone)
-    
+
     async def get_delivery_status(self, message_id: str) -> str:
-        """
-        Get delivery status of a sent message.
-        
-        :param message_id: Message ID from send_verification_code response
-        :return: Status string (sent, delivered, failed, unknown)
-        """
-        return await self.provider.check_delivery_status(message_id)
+        """Passthrough to the provider's delivery status API."""
+        try:
+            return await self.provider.check_delivery_status(message_id)
+        except SMSProviderError:
+            raise
+        except Exception as exc:  # upstream/SDK failures map to ProviderError (§1)
+            raise SMSProviderError(
+                f"Failed to check delivery status: {exc}"
+            ) from exc

@@ -1,0 +1,118 @@
+# Continuous integration (docs/CONTRACTS.md §11).
+#
+# Gates: ruff lint + full pytest matrix are REQUIRED for PRs and main.
+# mypy runs with a lenient baseline (advisory, may fail without blocking).
+# The publish workflow (.github/workflows/publish.yml) re-runs the same test
+# matrix on semver tags and only publishes after it passes.
+#
+# Build path: plain pip + PEP 517 (poetry-core backend). Poetry itself is not
+# needed in CI — see docs/REMEDIATION_STATUS_packaging.md for rationale.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  version-sync:
+    name: Version sync (pyproject == authy_package.__version__)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Check version sync
+        run: |
+          python - <<'PY'
+          import re
+          import tomllib
+          from pathlib import Path
+
+          meta = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+          pyproject_version = meta["tool"]["poetry"]["version"]
+          init_text = Path("authy_package/__init__.py").read_text(encoding="utf-8")
+          match = re.search(r'__version__\s*=\s*["\']([^"\']+)["\']', init_text)
+          assert match, "authy_package/__init__.py:__version__ not found"
+          init_version = match.group(1)
+          assert pyproject_version == init_version, (
+              f"version mismatch: pyproject.toml={pyproject_version!r} "
+              f"authy_package/__init__.py={init_version!r}"
+          )
+          print(f"versions in sync: {pyproject_version}")
+          PY
+
+  lint:
+    name: Ruff lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Ruff
+        run: ruff check authy_package tests examples
+
+  mypy:
+    name: Mypy (lenient baseline, advisory)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dev tooling
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[dev]"
+
+      - name: Mypy
+        run: mypy authy_package
+
+  test:
+    name: pytest (py${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.10", "3.11", "3.12"]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package with all extras + dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install ".[all,dev]"
+
+      - name: Run test suite
+        run: python -m pytest tests/

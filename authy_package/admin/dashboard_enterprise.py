@@ -1,400 +1,693 @@
-"""
-Authy Admin Dashboard - Advanced Enterprise Extensions
-Includes: AI Anomaly Detection, Report Builder, White-labeling, i18n, API Keys
+"""Admin v2 (enterprise) API — REAL implementations (CONTRACTS.md §8).
+
+Everything here persists through the §4 db contract; nothing is mocked:
+
+- **API keys**: plaintext returned ONCE at creation
+  (``authy_ak_`` + ``secrets.token_hex(32)``); only the sha256 hash is
+  stored via ``db.save_api_key``. Every ``/admin/v2`` route authenticates
+  the bearer (API key or admin JWT) through
+  :func:`~authy_package.admin.deps.get_v2_principal`.
+- **Branding/localization/settings**: persisted via the db settings kv.
+- **Reports**: real CSV/JSON generated from users/audit data; job ids are
+  ``secrets.token_hex(8)``; downloads served from the settings kv.
+- **Bulk user actions**: real db operations, bounded to 1000 ids, audited
+  per action.
+- **Security analytics**: RULE-BASED heuristics over audit events (brute
+  force, impossible-travel proxy via rapid IP change, MFA failure spikes).
+  These are deterministic detectors, NOT AI/ML models.
+- **Advanced audit search**: structured filters compiled to
+  ``db.search_audit_events`` kwargs.
 """
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Body, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field, EmailStr
-from typing import List, Optional, Dict, Any, Literal
-from datetime import datetime, timedelta
-from enum import Enum
+from __future__ import annotations
+
+import csv
+import hashlib
+import io
 import json
-import asyncio
-import random
-import statistics
-from collections import defaultdict
+import logging
+import secrets
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Literal, Optional
 
-# Mocking internal authy imports for standalone viability
-# In production, these would be: from authy_package.core import get_auth
-class MockAuth:
-    async def get_audit_logs(self, limit=100):
-        return [{"id": i, "event": "login", "timestamp": datetime.now().isoformat(), "ip": f"192.168.1.{i%255}"} for i in range(limit)]
-    
-    async def get_users(self, limit=100):
-        return [{"id": i, "email": f"user{i}@example.com", "created_at": datetime.now().isoformat()} for i in range(limit)]
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from pydantic import BaseModel, Field
 
-get_auth = lambda: MockAuth()
+from authy_package.admin.audit_logger import EventType
+from authy_package.admin.deps import (
+    AdminDependencies,
+    get_admin_deps,
+    get_v2_principal,
+    require_v2_scope,
+)
+from authy_package.errors import NotFoundError
 
-router = APIRouter(prefix="/admin/v2", tags=["Enterprise"])
+logger = logging.getLogger("authy.admin.enterprise")
 
-# =============================================================================
-# PHASE 3: CONFIGURATION & WHITE-LABELING
-# =============================================================================
+__all__ = ["enterprise_router"]
+
+enterprise_router = APIRouter(
+    prefix="/admin/v2",
+    tags=["Enterprise"],
+    dependencies=[Depends(get_v2_principal)],
+)
+
+#: Settings kv keys (db settings contract).
+BRANDING_SETTING_KEY = "admin:branding"
+LOCALIZATION_SETTING_KEY = "admin:localization"
+REPORT_INDEX_KEY = "admin:report:index"
+REPORT_KEY_TEMPLATE = "admin:report:{job_id}"
+
+#: Default branding/localization documents.
+DEFAULT_BRANDING: Dict[str, Any] = {
+    "app_name": "Authy Admin",
+    "primary_color": "#3B82F6",
+    "logo_url": None,
+    "favicon_url": None,
+    "support_email": None,
+    "custom_css": None,
+}
+DEFAULT_LOCALIZATION: Dict[str, Any] = {
+    "default_locale": "en-US",
+    "supported_locales": ["en-US"],
+    "timezone": "UTC",
+}
+
+#: User report CSV columns.
+_USER_REPORT_COLUMNS = (
+    "id",
+    "username",
+    "email",
+    "phone",
+    "role",
+    "is_active",
+    "mfa_enabled",
+    "created_at",
+)
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
+
+
+def _ensure_aware(dt: datetime) -> datetime:
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
+# ---------------------------------------------------------------------------
+# schemas
+# ---------------------------------------------------------------------------
+
+class CreateApiKeyRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    scopes: List[str] = Field(
+        ...,
+        min_length=1,
+        description="e.g. read:only, audit:logs, user:manage, admin:*",
+    )
+    expires_in_days: Optional[int] = Field(default=30, ge=1, le=3650)
+
 
 class BrandingConfig(BaseModel):
     app_name: str = "Authy Admin"
     primary_color: str = "#3B82F6"
     logo_url: Optional[str] = None
     favicon_url: Optional[str] = None
-    support_email: EmailStr = "support@authy.com"
+    support_email: Optional[str] = None
     custom_css: Optional[str] = None
+
 
 class LocalizationConfig(BaseModel):
     default_locale: str = "en-US"
-    supported_locales: List[str] = ["en-US", "es-ES", "fr-FR", "de-DE", "ja-JP"]
+    supported_locales: List[str] = Field(default_factory=lambda: ["en-US"])
     timezone: str = "UTC"
 
-class ApiKeyScope(str, Enum):
-    READ_ONLY = "read:only"
-    FULL_ACCESS = "full:access"
-    AUDIT_LOGS = "audit:logs"
-    USER_MANAGEMENT = "user:manage"
 
-class CreateApiKeyRequest(BaseModel):
-    name: str
-    scopes: List[ApiKeyScope]
-    expires_in_days: Optional[int] = 30
+class SettingValue(BaseModel):
+    value: Any
 
-class ApiKeyResponse(BaseModel):
-    id: str
-    name: str
-    prefix: str  # e.g., "ak_live_..."
-    scopes: List[ApiKeyScope]
-    created_at: datetime
-    expires_at: Optional[datetime]
-    last_used_at: Optional[datetime] = None
-
-
-class ApiKeyCreateResponse(ApiKeyResponse):
-    full_secret: str
-
-# In-memory store for demo (Replace with DB in production)
-active_api_keys: Dict[str, Dict] = {}
-branding_config = BrandingConfig()
-locale_config = LocalizationConfig()
-
-@router.get("/config/branding", response_model=BrandingConfig)
-async def get_branding():
-    """Retrieve current white-label configuration."""
-    return branding_config
-
-@router.put("/config/branding", response_model=BrandingConfig)
-async def update_branding(config: BrandingConfig):
-    """Update white-label branding settings."""
-    global branding_config
-    branding_config = config
-    # TODO: Invalidate CDN cache if applicable
-    return branding_config
-
-@router.get("/config/localization", response_model=LocalizationConfig)
-async def get_localization():
-    """Retrieve localization settings."""
-    return locale_config
-
-@router.put("/config/localization", response_model=LocalizationConfig)
-async def update_localization(config: LocalizationConfig):
-    """Update localization and timezone settings."""
-    global locale_config
-    locale_config = config
-    return locale_config
-
-@router.post("/api-keys", response_model=ApiKeyCreateResponse)
-async def create_api_key(request: CreateApiKeyRequest):
-    """Generate a new API key with specific scopes."""
-    import secrets
-    key_id = secrets.token_urlsafe(16)
-    secret = secrets.token_urlsafe(32)
-    prefix = f"ak_live_{secret[:8]}"
-    
-    now = datetime.now()
-    expires = now + timedelta(days=request.expires_in_days) if request.expires_in_days else None
-    
-    key_data = {
-        "id": key_id,
-        "name": request.name,
-        "secret": secret, # Only shown once
-        "prefix": prefix,
-        "scopes": request.scopes,
-        "created_at": now,
-        "expires_at": expires,
-        "last_used_at": None
-    }
-    active_api_keys[key_id] = key_data
-    
-    return ApiKeyCreateResponse(
-        **{k: v for k, v in key_data.items() if k != 'secret'},
-        full_secret=f"{prefix}{secret[8:]}"
-    )
-
-@router.get("/api-keys", response_model=List[ApiKeyResponse])
-async def list_api_keys():
-    """List all active API keys (secrets hidden)."""
-    return [
-        ApiKeyResponse(**{k: v for k, v in data.items() if k != 'secret'})
-        for data in active_api_keys.values()
-    ]
-
-@router.delete("/api-keys/{key_id}")
-async def revoke_api_key(key_id: str):
-    """Revoke an API key immediately."""
-    if key_id not in active_api_keys:
-        raise HTTPException(status_code=404, detail="Key not found")
-    del active_api_keys[key_id]
-    return {"status": "revoked", "id": key_id}
-
-# =============================================================================
-# PHASE 3: ADVANCED REPORTING ENGINE
-# =============================================================================
-
-class ReportType(str, Enum):
-    USER_GROWTH = "user_growth"
-    SECURITY_AUDIT = "security_audit"
-    SESSION_ANALYSIS = "session_analysis"
-    CUSTOM = "custom"
-
-class ReportFormat(str, Enum):
-    PDF = "pdf"
-    CSV = "csv"
-    JSON = "json"
 
 class GenerateReportRequest(BaseModel):
-    report_type: ReportType
-    format: ReportFormat = ReportFormat.PDF
-    date_range: Dict[str, str] # {"start": "...", "end": "..."}
-    filters: Optional[Dict[str, Any]] = None
-    include_charts: bool = True
+    report_type: Literal["users", "audit"]
+    format: Literal["csv", "json"] = "csv"
+    start: Optional[datetime] = None  # audit reports only
+    end: Optional[datetime] = None  # audit reports only
+    limit: int = Field(default=10000, ge=1, le=50000)
 
-@router.post("/reports/generate")
-async def generate_report(request: GenerateReportRequest):
-    """
-    Generate a custom report based on type and filters.
-    Returns a download URL or base64 content depending on format.
-    """
-    # Simulate heavy processing
-    await asyncio.sleep(1.5)
-    
-    report_id = f"rpt_{random.randint(10000, 99999)}"
-    status = "completed"
-    
-    mock_data = {
-        "id": report_id,
-        "type": request.report_type,
-        "generated_at": datetime.now().isoformat(),
-        "rows": 1240,
-        "download_url": f"/admin/v2/reports/{report_id}/download.{request.format}",
-        "summary": {
-            "total_events": 15403,
-            "unique_users": 892,
-            "anomalies_detected": 3
-        }
-    }
-    
-    return mock_data
-
-@router.get("/reports/{report_id}/download.{extension}")
-async def download_report(report_id: str, extension: str):
-    """Stream report file."""
-    return {
-        "filename": f"{report_id}_report.{extension}",
-        "content_type": f"application/{extension}",
-        "size_kb": 450,
-        "message": "Binary stream would be returned here."
-    }
-
-# =============================================================================
-# PHASE 4: AI & INTELLIGENCE ENGINE
-# =============================================================================
-
-class AnomalySeverity(str, Enum):
-    LOW = "low"
-    MEDIUM = "medium"
-    HIGH = "high"
-    CRITICAL = "critical"
-
-class AnomalyDetectionResult(BaseModel):
-    id: str
-    type: str
-    severity: AnomalySeverity
-    description: str
-    affected_users: int
-    confidence_score: float
-    recommended_action: str
-    detected_at: datetime
-
-class PredictiveMetric(BaseModel):
-    metric_name: str
-    current_value: float
-    predicted_value_7d: float
-    predicted_value_30d: float
-    trend: Literal["up", "down", "stable"]
-    confidence_interval: Dict[str, float]
-
-class NaturalLanguageQueryRequest(BaseModel):
-    query: str = Field(..., description="Natural language question, e.g., 'Show me failed logins from yesterday'")
-
-class NLQResponse(BaseModel):
-    sql_generated: str
-    data: List[Dict[str, Any]]
-    chart_suggestion: Optional[str] = None
-    explanation: str
-
-# Mock AI Services
-@router.get("/ai/anomalies", response_model=List[AnomalyDetectionResult])
-async def detect_anomalies():
-    """
-    AI-powered anomaly detection.
-    Analyzes login patterns, IP geolocation jumps, and velocity checks.
-    """
-    # Simulate AI analysis of recent logs
-    anomalies = [
-        AnomalyDetectionResult(
-            id="anom_1",
-            type="impossible_travel",
-            severity=AnomalySeverity.HIGH,
-            description="User logged in from New York and London within 15 minutes.",
-            affected_users=1,
-            confidence_score=0.98,
-            recommended_action="Force password reset and revoke sessions.",
-            detected_at=datetime.now()
-        ),
-        AnomalyDetectionResult(
-            id="anom_2",
-            type="brute_force_cluster",
-            severity=AnomalySeverity.MEDIUM,
-            description="Unusual spike in failed login attempts from subnet 192.168.1.x",
-            affected_users=12,
-            confidence_score=0.85,
-            recommended_action="Temporarily block subnet IP range.",
-            detected_at=datetime.now() - timedelta(hours=2)
-        )
-    ]
-    return anomalies
-
-@router.get("/ai/predictions", response_model=List[PredictiveMetric])
-async def get_predictions():
-    """
-    Predictive analytics using time-series forecasting (Prophet/ARIMA).
-    """
-    return [
-        PredictiveMetric(
-            metric_name="Daily Active Users",
-            current_value=1250.0,
-            predicted_value_7d=1340.5,
-            predicted_value_30d=1580.2,
-            trend="up",
-            confidence_interval={"lower": 1500.0, "upper": 1650.0}
-        ),
-        PredictiveMetric(
-            metric_name="Failed Login Rate",
-            current_value=45.0,
-            predicted_value_7d=42.0,
-            predicted_value_30d=40.0,
-            trend="down",
-            confidence_interval={"lower": 35.0, "upper": 45.0}
-        )
-    ]
-
-@router.post("/ai/nlq", response_model=NLQResponse)
-async def natural_language_query(request: NaturalLanguageQueryRequest):
-    """
-    Convert natural language to SQL/Query and execute.
-    Uses LLM internally to parse intent.
-    """
-    query_lower = request.query.lower()
-    
-    # Simple heuristic mock for demo
-    if "failed login" in query_lower:
-        sql = "SELECT count(*) FROM audit_logs WHERE event_type = 'login_failed' AND timestamp > NOW() - INTERVAL '1 day'"
-        data = [{"count": 145}]
-        chart = "bar"
-        explanation = "Queried audit logs for failed login events in the last 24 hours."
-    elif "new users" in query_lower:
-        sql = "SELECT count(*) FROM users WHERE created_at > NOW() - INTERVAL '7 days'"
-        data = [{"count": 89}]
-        chart = "line"
-        explanation = "Counted new user registrations in the last 7 days."
-    else:
-        sql = "SELECT * FROM audit_logs LIMIT 10"
-        data = [{"id": 1, "event": "login_success"}]
-        chart = "table"
-        explanation = "Defaulting to recent audit logs as query intent was ambiguous."
-
-    return NLQResponse(
-        sql_generated=sql,
-        data=data,
-        chart_suggestion=chart,
-        explanation=explanation
-    )
-
-# =============================================================================
-# PHASE 2: ENHANCED USER & AUDIT MANAGEMENT
-# =============================================================================
-
-class UserBulkAction(str, Enum):
-    DELETE = "delete"
-    DISABLE = "disable"
-    ENABLE = "enable"
-    FORCE_PASSWORD_RESET = "force_reset"
 
 class BulkActionRequest(BaseModel):
-    user_ids: List[str]
-    action: UserBulkAction
+    user_ids: List[str] = Field(..., min_length=1)
+    action: Literal["enable", "disable", "delete", "force_password_reset"]
     reason: Optional[str] = None
 
-@router.post("/users/bulk-action")
-async def perform_bulk_action(request: BulkActionRequest):
-    """Perform actions on multiple users simultaneously."""
-    # Implementation would loop through IDs and apply action
-    return {
-        "success": True,
-        "processed_count": len(request.user_ids),
-        "action": request.action,
-        "failed_ids": []
-    }
 
 class AuditSearchFilter(BaseModel):
     event_types: Optional[List[str]] = None
-    actor_id: Optional[str] = None
-    ip_address: Optional[str] = None
-    date_start: datetime
-    date_end: datetime
-    severity: Optional[str] = None
-    search_text: Optional[str] = None
+    actor: Optional[str] = None
+    target: Optional[str] = None
+    start: Optional[datetime] = None
+    end: Optional[datetime] = None
+    limit: int = Field(default=50, ge=1, le=1000)
+    offset: int = Field(default=0, ge=0)
 
-@router.post("/audit-logs/search")
-async def advanced_audit_search(filters: AuditSearchFilter):
+
+# ---------------------------------------------------------------------------
+# API keys
+# ---------------------------------------------------------------------------
+
+@enterprise_router.post(
+    "/api-keys",
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(require_v2_scope("admin:*"))],
+)
+async def create_api_key(
+    body: CreateApiKeyRequest,
+    principal: Dict[str, Any] = Depends(get_v2_principal),
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Create an API key. The plaintext key is returned ONCE here only."""
+    plaintext = "authy_ak_" + secrets.token_hex(32)
+    key_hash = hashlib.sha256(plaintext.encode("utf-8")).hexdigest()
+    expires_at = (
+        _utcnow() + timedelta(days=body.expires_in_days)
+        if body.expires_in_days
+        else None
+    )
+    record = await deps.db.save_api_key(
+        {
+            "name": body.name,
+            "key_hash": key_hash,
+            "prefix": plaintext[:16],
+            "scopes": list(body.scopes),
+            "expires_at": expires_at,
+            "created_by": principal.get("id"),
+            "created_at": _utcnow(),
+            "last_used_at": None,
+        }
+    )
+    view = dict(record)
+    view.pop("key_hash", None)
+    view["api_key"] = plaintext  # shown exactly once
+    return view
+
+
+@enterprise_router.get(
+    "/api-keys",
+    dependencies=[Depends(require_v2_scope("read:only", "api_keys:read"))],
+)
+async def list_api_keys(
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """List API key records (hashes never exposed)."""
+    records = await deps.db.list_api_keys()
+    views = []
+    for record in records:
+        view = dict(record)
+        view.pop("key_hash", None)
+        views.append(view)
+    return {"api_keys": views, "total": len(views)}
+
+
+@enterprise_router.delete(
+    "/api-keys/{key_id}",
+    dependencies=[Depends(require_v2_scope("admin:*"))],
+)
+async def revoke_api_key(
+    key_id: str,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Revoke an API key."""
+    if not await deps.db.revoke_api_key(key_id):
+        raise NotFoundError(f"API key {key_id!r} does not exist")
+    return {"status": "revoked", "id": key_id}
+
+
+# ---------------------------------------------------------------------------
+# branding / localization / settings (db settings kv)
+# ---------------------------------------------------------------------------
+
+@enterprise_router.get(
+    "/config/branding",
+    dependencies=[Depends(require_v2_scope("read:only", "config:read"))],
+)
+async def get_branding(
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Current branding settings (defaults when unset)."""
+    stored = await deps.db.get_setting(BRANDING_SETTING_KEY)
+    merged = dict(DEFAULT_BRANDING)
+    if isinstance(stored, dict):
+        merged.update(stored)
+    return merged
+
+
+@enterprise_router.put(
+    "/config/branding",
+    dependencies=[Depends(require_v2_scope("admin:*"))],
+)
+async def update_branding(
+    body: BrandingConfig,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Persist branding settings via the db settings kv."""
+    value = body.model_dump()
+    await deps.db.set_setting(BRANDING_SETTING_KEY, value)
+    return value
+
+
+@enterprise_router.get(
+    "/config/localization",
+    dependencies=[Depends(require_v2_scope("read:only", "config:read"))],
+)
+async def get_localization(
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Current localization settings (defaults when unset)."""
+    stored = await deps.db.get_setting(LOCALIZATION_SETTING_KEY)
+    merged = dict(DEFAULT_LOCALIZATION)
+    if isinstance(stored, dict):
+        merged.update(stored)
+    return merged
+
+
+@enterprise_router.put(
+    "/config/localization",
+    dependencies=[Depends(require_v2_scope("admin:*"))],
+)
+async def update_localization(
+    body: LocalizationConfig,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Persist localization settings via the db settings kv."""
+    value = body.model_dump()
+    await deps.db.set_setting(LOCALIZATION_SETTING_KEY, value)
+    return value
+
+
+@enterprise_router.get(
+    "/settings/{key}",
+    dependencies=[Depends(require_v2_scope("read:only", "settings:read"))],
+)
+async def get_setting(
+    key: str,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Fetch one arbitrary setting from the kv store."""
+    value = await deps.db.get_setting(f"admin:settings:{key}")
+    return {"key": key, "value": value}
+
+
+@enterprise_router.put(
+    "/settings/{key}",
+    dependencies=[Depends(require_v2_scope("admin:*"))],
+)
+async def set_setting(
+    key: str,
+    body: SettingValue,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Persist one arbitrary JSON-serializable setting."""
+    await deps.db.set_setting(f"admin:settings:{key}", body.value)
+    return {"key": key, "value": body.value}
+
+
+# ---------------------------------------------------------------------------
+# reports (real generation from db data)
+# ---------------------------------------------------------------------------
+
+def _render_user_report(rows: List[Dict[str, Any]], format: str) -> str:
+    """Render users as CSV (QUOTE_ALL) or JSON."""
+    if format == "json":
+        return json.dumps(rows, indent=2, default=str)
+    buffer = io.StringIO()
+    writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+    writer.writerow(_USER_REPORT_COLUMNS)
+    for row in rows:
+        writer.writerow([str(row.get(column) if row.get(column) is not None else "")
+                         for column in _USER_REPORT_COLUMNS])
+    return buffer.getvalue()
+
+
+@enterprise_router.post(
+    "/reports/generate",
+    dependencies=[Depends(require_v2_scope("read:only", "audit:logs", "user:manage"))],
+)
+async def generate_report(
+    body: GenerateReportRequest,
+    principal: Dict[str, Any] = Depends(get_v2_principal),
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Generate a REAL report from users/audit data.
+
+    The artifact is stored under ``admin:report:{job_id}`` in the settings
+    kv; job ids are ``secrets.token_hex(8)``.
     """
-    Advanced search builder for audit logs.
-    Supports complex filtering, boolean logic, and text search.
-    """
-    # Mock result
+    if body.report_type == "users":
+        rows, _total = await deps.db.list_users(limit=body.limit, offset=0)
+        rows = [
+            {column: row.get(column) for column in _USER_REPORT_COLUMNS}
+            for row in rows
+        ]
+        content = _render_user_report(rows, body.format)
+    else:  # audit
+        if deps.audit_logger is not None:
+            content = await deps.audit_logger.export_events(
+                start=body.start, end=body.end, limit=body.limit, format=body.format
+            )
+        else:
+            audit_rows, _total = await deps.db.search_audit_events(
+                start=body.start, end=body.end, limit=body.limit
+            )
+            if body.format == "json":
+                content = json.dumps(audit_rows, indent=2, default=str)
+            else:
+                from authy_package.admin.audit_logger import AuditLogger
+
+                content = AuditLogger._export_csv(audit_rows)
+        rows = []
+
+    job_id = secrets.token_hex(8)
+    generated_at = _utcnow()
+    await deps.db.set_setting(
+        REPORT_KEY_TEMPLATE.format(job_id=job_id),
+        {
+            "job_id": job_id,
+            "report_type": body.report_type,
+            "format": body.format,
+            "content": content,
+            "rows": len(rows) if body.report_type == "users" else None,
+            "generated_at": generated_at.isoformat(),
+            "created_by": principal.get("id"),
+        },
+    )
+    index = await deps.db.get_setting(REPORT_INDEX_KEY) or []
+    index.append(
+        {
+            "job_id": job_id,
+            "report_type": body.report_type,
+            "format": body.format,
+            "generated_at": generated_at.isoformat(),
+        }
+    )
+    await deps.db.set_setting(REPORT_INDEX_KEY, index[-100:])
+    logger.info("Generated %s report %s (%s)", body.report_type, job_id, body.format)
     return {
-        "total": 450,
-        "page": 1,
-        "results": [
-            {"id": 101, "event": "user.updated", "actor": "admin_1", "ip": "10.0.0.1", "timestamp": datetime.now().isoformat()},
-            {"id": 102, "event": "login.failed", "actor": "user_55", "ip": "203.0.113.5", "timestamp": datetime.now().isoformat()}
-        ],
-        "applied_filters": filters.dict()
+        "job_id": job_id,
+        "status": "completed",
+        "report_type": body.report_type,
+        "format": body.format,
+        "generated_at": generated_at.isoformat(),
+        "download_url": f"/admin/v2/reports/{job_id}/download",
     }
 
-# =============================================================================
-# WEBSOCKET: REAL-TIME AI ALERTS
-# =============================================================================
 
-@router.websocket("/ws/ai-alerts")
-async def websocket_ai_alerts(websocket: WebSocket):
-    await websocket.accept()
-    try:
-        while True:
-            # Simulate pushing real-time AI detected threats
-            await asyncio.sleep(10)
-            alert = {
-                "type": "ai_threat_detected",
-                "severity": "high",
-                "message": "New brute force pattern detected on /login endpoint",
-                "timestamp": datetime.now().isoformat()
-            }
-            await websocket.send_json(alert)
-    except WebSocketDisconnect:
-        pass
+@enterprise_router.get(
+    "/reports",
+    dependencies=[Depends(require_v2_scope("read:only", "reports:read"))],
+)
+async def list_reports(
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """List generated report jobs (metadata only)."""
+    index = await deps.db.get_setting(REPORT_INDEX_KEY) or []
+    return {"reports": index, "total": len(index)}
+
+
+@enterprise_router.get(
+    "/reports/{job_id}/download",
+    dependencies=[Depends(require_v2_scope("read:only", "reports:read"))],
+)
+async def download_report(
+    job_id: str,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Response:
+    """Download a previously generated report."""
+    record = await deps.db.get_setting(REPORT_KEY_TEMPLATE.format(job_id=job_id))
+    if not isinstance(record, dict) or "content" not in record:
+        raise NotFoundError(f"Report {job_id!r} does not exist")
+    media_type = (
+        "text/csv" if record.get("format") == "csv" else "application/json"
+    )
+    filename = f"authy_report_{job_id}.{record.get('format', 'bin')}"
+    return Response(
+        content=record["content"],
+        media_type=media_type,
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# ---------------------------------------------------------------------------
+# bulk user actions (real, bounded, audited)
+# ---------------------------------------------------------------------------
+
+@enterprise_router.post(
+    "/users/bulk-action",
+    dependencies=[Depends(require_v2_scope("user:manage"))],
+)
+async def perform_bulk_action(
+    body: BulkActionRequest,
+    principal: Dict[str, Any] = Depends(get_v2_principal),
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Apply enable/disable/delete/force_password_reset to up to 1000 users."""
+    if len(body.user_ids) > 1000:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Bulk actions are limited to 1000 user_ids",
+        )
+    succeeded: List[str] = []
+    failed: List[Dict[str, Any]] = []
+    for user_id in body.user_ids:
+        try:
+            if body.action == "delete":
+                await deps.db.revoke_all_user_sessions(user_id)
+                if not await deps.db.delete_user(user_id):
+                    failed.append({"user_id": user_id, "reason": "User not found"})
+                    continue
+            elif body.action in ("enable", "disable"):
+                updated = await deps.db.update_user(
+                    user_id, {"is_active": body.action == "enable"}
+                )
+                if updated is None:
+                    failed.append({"user_id": user_id, "reason": "User not found"})
+                    continue
+                if body.action == "disable":
+                    await deps.db.revoke_all_user_sessions(user_id)
+            else:  # force_password_reset
+                updated = await deps.db.update_user(
+                    user_id, {"must_reset_password": True}
+                )
+                if updated is None:
+                    failed.append({"user_id": user_id, "reason": "User not found"})
+                    continue
+            succeeded.append(user_id)
+            if deps.audit_logger is not None:
+                await deps.audit_logger.log(
+                    EventType.ADMIN_ACTION,
+                    f"Bulk v2 {body.action} applied to user {user_id}",
+                    actor_id=str(principal.get("id")),
+                    target_id=user_id,
+                    target_type="user",
+                    metadata={"action": body.action, "reason": body.reason},
+                    severity="warning" if body.action == "delete" else "info",
+                    sync=True,
+                )
+        except Exception as exc:  # noqa: BLE001 - continue batch
+            failed.append({"user_id": user_id, "reason": type(exc).__name__})
+    return {
+        "action": body.action,
+        "processed_count": len(succeeded),
+        "failed_ids": failed,
+        "succeeded": succeeded,
+    }
+
+
+# ---------------------------------------------------------------------------
+# security analytics (rule-based heuristics — NOT AI)
+# ---------------------------------------------------------------------------
+
+#: Seconds between logins below which an IP change is flagged.
+IMPOSSIBLE_TRAVEL_WINDOW_SECONDS = 1800
+
+
+@enterprise_router.get(
+    "/security/analytics",
+    dependencies=[Depends(require_v2_scope("read:only", "audit:logs"))],
+)
+async def security_analytics(
+    window_hours: int = Query(default=24, ge=1, le=720),
+    brute_force_threshold: int = Query(default=5, ge=2),
+    mfa_spike_threshold: int = Query(default=5, ge=2),
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Rule-based security detectors over audit events.
+
+    HEURISTICS, not AI/ML:
+
+    - ``brute_force``: >= ``brute_force_threshold`` failed logins per
+      (identifier, ip) inside the window.
+    - ``impossible_travel_proxy``: successful logins for one actor from
+      different IPs less than 30 minutes apart (IP-change velocity; no
+      geolocation is used or claimed).
+    - ``mfa_failure_spike``: >= ``mfa_spike_threshold`` failed MFA codes
+      per actor inside the window.
+    """
+    now = _utcnow()
+    window_start = now - timedelta(hours=window_hours)
+    incidents: List[Dict[str, Any]] = []
+
+    # -- brute force -----------------------------------------------------
+    failed_rows, _failed_total = await deps.db.search_audit_events(
+        event_types=[EventType.LOGIN_FAILED.value],
+        start=window_start,
+        limit=5000,
+    )
+    buckets: Dict[tuple, Dict[str, Any]] = {}
+    for row in failed_rows:
+        identifier = (
+            row.get("target")
+            or (row.get("metadata") or {}).get("identifier")
+            or row.get("actor")
+            or "unknown"
+        )
+        key = (str(identifier), str(row.get("ip_address") or "unknown"))
+        bucket = buckets.setdefault(
+            key,
+            {"count": 0, "first_at": None, "last_at": None},
+        )
+        bucket["count"] += 1
+        ts = row.get("timestamp")
+        if ts is not None:
+            ts = _ensure_aware(ts)
+            if bucket["first_at"] is None or ts < bucket["first_at"]:
+                bucket["first_at"] = ts
+            if bucket["last_at"] is None or ts > bucket["last_at"]:
+                bucket["last_at"] = ts
+    for (identifier, ip_address), bucket in buckets.items():
+        if bucket["count"] >= brute_force_threshold:
+            incidents.append(
+                {
+                    "type": "brute_force",
+                    "severity": "high",
+                    "identifier": identifier,
+                    "ip_address": ip_address,
+                    "count": bucket["count"],
+                    "first_at": bucket["first_at"].isoformat()
+                    if bucket["first_at"]
+                    else None,
+                    "last_at": bucket["last_at"].isoformat()
+                    if bucket["last_at"]
+                    else None,
+                }
+            )
+
+    # -- impossible-travel proxy (rapid IP change) -------------------------
+    success_rows, _success_total = await deps.db.search_audit_events(
+        event_types=[EventType.LOGIN_SUCCESS.value],
+        start=window_start,
+        limit=5000,
+    )
+    by_actor: Dict[str, List[Dict[str, Any]]] = {}
+    for row in success_rows:
+        actor = row.get("actor")
+        if actor and row.get("ip_address"):
+            by_actor.setdefault(str(actor), []).append(row)
+    for actor, rows in by_actor.items():
+        rows.sort(key=lambda r: _ensure_aware(r.get("timestamp") or now))
+        previous: Optional[Dict[str, Any]] = None
+        for row in rows:
+            if previous is not None and row.get("ip_address") != previous.get(
+                "ip_address"
+            ):
+                delta = (
+                    _ensure_aware(row["timestamp"])
+                    - _ensure_aware(previous["timestamp"])
+                ).total_seconds()
+                if 0 <= delta <= IMPOSSIBLE_TRAVEL_WINDOW_SECONDS:
+                    incidents.append(
+                        {
+                            "type": "impossible_travel_proxy",
+                            "severity": "medium",
+                            "actor": actor,
+                            "from_ip": previous.get("ip_address"),
+                            "to_ip": row.get("ip_address"),
+                            "seconds_between": round(delta, 1),
+                        }
+                    )
+            previous = row
+
+    # -- MFA failure spikes ------------------------------------------------
+    mfa_rows, _mfa_total = await deps.db.search_audit_events(
+        event_types=[EventType.MFA_CODE_FAILED.value],
+        start=window_start,
+        limit=5000,
+    )
+    mfa_counts: Dict[str, int] = {}
+    for row in mfa_rows:
+        actor = str(row.get("actor") or "unknown")
+        mfa_counts[actor] = mfa_counts.get(actor, 0) + 1
+    for actor, count in mfa_counts.items():
+        if count >= mfa_spike_threshold:
+            incidents.append(
+                {
+                    "type": "mfa_failure_spike",
+                    "severity": "medium",
+                    "actor": actor,
+                    "count": count,
+                }
+            )
+
+    return {
+        "generated_at": now.isoformat(),
+        "window_hours": window_hours,
+        "heuristic": True,
+        "method": "rule-based detectors over audit events (no AI/ML)",
+        "detectors": {
+            "brute_force": {"threshold": brute_force_threshold},
+            "impossible_travel_proxy": {
+                "window_seconds": IMPOSSIBLE_TRAVEL_WINDOW_SECONDS,
+                "note": "IP-change velocity only; no geolocation",
+            },
+            "mfa_failure_spike": {"threshold": mfa_spike_threshold},
+        },
+        "counts": {
+            "failed_logins": len(failed_rows),
+            "successful_logins": len(success_rows),
+            "mfa_failures": len(mfa_rows),
+        },
+        "incidents": incidents,
+        "total_incidents": len(incidents),
+    }
+
+
+# ---------------------------------------------------------------------------
+# advanced audit search (compiled to search_audit_events kwargs)
+# ---------------------------------------------------------------------------
+
+@enterprise_router.post(
+    "/audit-logs/search",
+    dependencies=[Depends(require_v2_scope("read:only", "audit:logs"))],
+)
+async def advanced_audit_search(
+    filters: AuditSearchFilter,
+    deps: AdminDependencies = Depends(get_admin_deps),
+) -> Dict[str, Any]:
+    """Structured audit search compiled to db.search_audit_events kwargs."""
+    kwargs: Dict[str, Any] = {
+        "event_types": filters.event_types,
+        "actor": filters.actor,
+        "target": filters.target,
+        "start": filters.start,
+        "end": filters.end,
+        "limit": filters.limit,
+        "offset": filters.offset,
+    }
+    rows, total = await deps.db.search_audit_events(**kwargs)
+    return {
+        "events": rows,
+        "total": total,
+        "applied_filters": filters.model_dump(mode="json"),
+    }

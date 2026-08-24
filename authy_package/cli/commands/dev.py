@@ -18,7 +18,7 @@ console = Console()
 
 
 @click.command(name='dev')
-@click.option('--host', '-h', default='0.0.0.0', help='Host to bind')
+@click.option('--host', '-h', default='127.0.0.1', show_default=True, help='Host to bind')
 @click.option('--port', '-p', default=8000, type=int, help='Port to bind')
 @click.option('--reload', is_flag=True, default=True, help='Enable auto-reload')
 @click.option('--https', is_flag=True, help='Enable HTTPS with self-signed cert')
@@ -124,8 +124,8 @@ async def _generate_cert(cert_file: Path, key_file: Path):
             .issuer_name(issuer)
             .public_key(key.public_key())
             .serial_number(x509.random_serial_number())
-            .not_valid_before(datetime.datetime.utcnow())
-            .not_valid_after(datetime.datetime.utcnow() + datetime.timedelta(days=365))
+            .not_valid_before(datetime.datetime.now(datetime.timezone.utc))
+            .not_valid_after(datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(days=365))
             .add_extension(
                 x509.SubjectAlternativeName([x509.DNSName("localhost")]),
                 critical=False,
@@ -238,7 +238,16 @@ async def _run_django_dev(host: str, port: int, reload: bool):
 
 
 async def _run_generic_dev(host: str, port: int):
-    """Run generic development server."""
+    """Run generic static-file development server.
+
+    The static fallback ALWAYS binds 127.0.0.1 (§9) — it is never exposed on
+    other interfaces regardless of --host.
+    """
+    if host != "127.0.0.1":
+        console.print(
+            f"[yellow]⚠ Static fallback ignores --host={host}; binding 127.0.0.1 only[/yellow]"
+        )
+    host = "127.0.0.1"
     console.print(f"""
 [yellow]⚠ No framework detected. Starting basic server...[/yellow]
 

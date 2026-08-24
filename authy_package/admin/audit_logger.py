@@ -1,25 +1,49 @@
-"""
-Audit Logging System
+"""Audit logging (CONTRACTS.md §4 audit-log contract).
 
-Features:
-- Comprehensive event tracking
-- Immutable audit trail
-- Search and filtering
-- Compliance ready (SOC2, GDPR)
-- Real-time monitoring
-- Export capabilities
+Durable, append-only audit trail persisted through the unified database
+contract (``db.save_audit_event`` / ``save_audit_events`` /
+``search_audit_events`` / ``get_audit_statistics`` /
+``get_audit_time_series``). The db adapter is responsible for the checksum
+hash-chain; this module produces well-formed event documents.
+
+Design:
+
+- 34-member :class:`EventType` enum (stable string values).
+- :meth:`AuditLogger.log` enqueues events into an in-memory queue; a
+  periodic flush task (started via :meth:`AuditLogger.start`) drains it
+  every ``flush_interval_seconds`` and :meth:`AuditLogger.close` performs a
+  final flush. ``sync=True`` writes immediately for security-critical events.
+- Event documents carry BOTH ``actor``/``target`` (the keys the db search
+  contract filters on) and the legacy ``actor_id``/``target_id`` aliases.
+- Timestamps are stored as timezone-aware datetimes so db adapters can
+  compare them directly.
+- CSV export uses the ``csv`` module with ``QUOTE_ALL`` so hostile strings
+  (embedded quotes, commas, newlines, formula characters) are always quoted.
 """
 
-import uuid
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
-from dataclasses import dataclass, field
-from enum import Enum
+from __future__ import annotations
+
+import asyncio
+import csv
+import io
 import json
+import logging
+import secrets
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional, Tuple
+
+from authy_package.db.abstract_db import AbstractDatabase
+
+logger = logging.getLogger("authy.admin.audit")
+
+__all__ = ["EventType", "AuditEvent", "AuditLogger"]
 
 
 class EventType(Enum):
-    """Audit event types"""
+    """The 34 canonical audit event types."""
+
     # Authentication
     LOGIN_SUCCESS = "auth.login.success"
     LOGIN_FAILED = "auth.login.failed"
@@ -27,29 +51,29 @@ class EventType(Enum):
     PASSWORD_CHANGED = "auth.password.changed"
     PASSWORD_RESET_REQUESTED = "auth.password.reset_requested"
     PASSWORD_RESET_COMPLETED = "auth.password.reset_completed"
-    
-    # User Management
+
+    # User management
     USER_CREATED = "user.created"
     USER_UPDATED = "user.updated"
     USER_DELETED = "user.deleted"
     USER_VERIFIED = "user.verified"
-    
-    # Session Management
+
+    # Session management
     SESSION_CREATED = "session.created"
     SESSION_REVOKED = "session.revoked"
     SESSION_EXPIRED = "session.expired"
-    
+
     # MFA
     MFA_ENABLED = "mfa.enabled"
     MFA_DISABLED = "mfa.disabled"
     MFA_CODE_VERIFIED = "mfa.code.verified"
     MFA_CODE_FAILED = "mfa.code.failed"
-    
-    # Social Auth
+
+    # Social auth
     SOCIAL_LINKED = "social.linked"
     SOCIAL_UNLINKED = "social.unlinked"
     SOCIAL_LOGIN = "social.login"
-    
+
     # Organization
     ORG_CREATED = "org.created"
     ORG_UPDATED = "org.updated"
@@ -58,65 +82,206 @@ class EventType(Enum):
     ROLE_CHANGED = "org.role.changed"
     INVITATION_SENT = "org.invitation.sent"
     INVITATION_ACCEPTED = "org.invitation.accepted"
-    
+
     # Security
     SUSPICIOUS_ACTIVITY = "security.suspicious"
     RATE_LIMIT_EXCEEDED = "security.rate_limit"
     ACCOUNT_LOCKED = "security.account_locked"
     ACCOUNT_UNLOCKED = "security.account_unlocked"
-    
+
     # Admin
     ADMIN_ACTION = "admin.action"
     DATA_EXPORT = "admin.data_export"
     USER_IMPERSONATION = "admin.user_impersonation"
 
 
+#: Event types treated as security-relevant by :meth:`AuditLogger.security_events`.
+SECURITY_EVENT_TYPES: Tuple[EventType, ...] = (
+    EventType.SUSPICIOUS_ACTIVITY,
+    EventType.RATE_LIMIT_EXCEEDED,
+    EventType.ACCOUNT_LOCKED,
+    EventType.ACCOUNT_UNLOCKED,
+    EventType.LOGIN_FAILED,
+    EventType.MFA_CODE_FAILED,
+)
+
+#: Column order for CSV export.
+_CSV_COLUMNS = (
+    "id",
+    "timestamp",
+    "event_type",
+    "actor",
+    "actor_email",
+    "target",
+    "target_type",
+    "action",
+    "ip_address",
+    "user_agent",
+    "organization_id",
+    "severity",
+    "status",
+    "metadata",
+)
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (CONTRACTS §0.5)."""
+    return datetime.now(timezone.utc)
+
+
+def _coerce_event_type(event_type: "EventType | str") -> EventType:
+    """Accept either an enum member or its string value."""
+    if isinstance(event_type, EventType):
+        return event_type
+    return EventType(event_type)
+
+
+def _serialize_timestamp(value: Any) -> Any:
+    """Render datetimes as ISO-8601 strings for export payloads."""
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
+
+
 @dataclass
 class AuditEvent:
-    """Represents an audit log entry"""
+    """One audit event as an in-memory record."""
+
     id: str
-    event_type: EventType
-    actor_id: Optional[str]
-    actor_email: Optional[str]
-    target_id: Optional[str]
-    target_type: Optional[str]
+    event_type: str
     action: str
     timestamp: datetime
-    ip_address: Optional[str]
-    user_agent: Optional[str]
+    actor: Optional[str] = None
+    actor_email: Optional[str] = None
+    target: Optional[str] = None
+    target_type: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
     metadata: Dict[str, Any] = field(default_factory=dict)
     organization_id: Optional[str] = None
-    severity: str = "info"  # info, warning, error, critical
-    status: str = "success"  # success, failure
+    severity: str = "info"  # info | warning | error | critical
+    status: str = "success"  # success | failure
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize to the db-contract event document shape."""
+        return {
+            "id": self.id,
+            "event_type": self.event_type,
+            "actor": self.actor,
+            "actor_id": self.actor,  # legacy alias kept for compatibility
+            "actor_email": self.actor_email,
+            "target": self.target,
+            "target_id": self.target,  # legacy alias
+            "target_type": self.target_type,
+            "action": self.action,
+            "timestamp": self.timestamp,
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "metadata": dict(self.metadata or {}),
+            "organization_id": self.organization_id,
+            "severity": self.severity,
+            "status": self.status,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "AuditEvent":
+        """Build an :class:`AuditEvent` from a stored document."""
+        timestamp = data.get("timestamp")
+        if isinstance(timestamp, str):
+            timestamp = datetime.fromisoformat(timestamp)
+        elif timestamp is None:
+            timestamp = _utcnow()
+        return cls(
+            id=str(data.get("id", "")),
+            event_type=str(data.get("event_type", "")),
+            action=str(data.get("action", "")),
+            timestamp=timestamp,
+            actor=data.get("actor", data.get("actor_id")),
+            actor_email=data.get("actor_email"),
+            target=data.get("target", data.get("target_id")),
+            target_type=data.get("target_type"),
+            ip_address=data.get("ip_address"),
+            user_agent=data.get("user_agent"),
+            metadata=dict(data.get("metadata") or {}),
+            organization_id=data.get("organization_id"),
+            severity=str(data.get("severity", "info")),
+            status=str(data.get("status", "success")),
+        )
 
 
 class AuditLogger:
+    """Batched audit logger persisted via the §4 database contract.
+
+    Usage::
+
+        audit = AuditLogger(db)
+        audit.start()  # optional periodic flush task
+        await audit.log(EventType.LOGIN_SUCCESS, "User logged in",
+                        actor_id=user_id, sync=True)
+        events, total = await audit.search(actor=user_id)
+        await audit.close()  # final flush
     """
-    Comprehensive audit logging system
-    
-    Usage:
-        audit_logger = AuditLogger(config, db, cache)
-        await audit_logger.log(
-            event_type=EventType.LOGIN_SUCCESS,
-            actor_id=user_id,
-            action="User logged in successfully",
-            ip_address=request_ip
-        )
-        events = await audit_logger.search(user_id=user_id, limit=100)
-    """
-    
-    def __init__(self, config, db, cache):
-        self.config = config
-        self.db = db
-        self.cache = cache
-        self._retention_days = config.audit_log_retention_days or 365
-        self._async_queue = []
-        self._queue_size_limit = 100
-    
+
+    def __init__(
+        self,
+        db: AbstractDatabase,
+        *,
+        flush_interval_seconds: float = 5.0,
+        queue_limit: int = 100,
+        retention_days: int = 365,
+    ) -> None:
+        if queue_limit <= 0:
+            raise ValueError("queue_limit must be positive")
+        if flush_interval_seconds <= 0:
+            raise ValueError("flush_interval_seconds must be positive")
+        self._db = db
+        self._flush_interval = flush_interval_seconds
+        self._queue_limit = queue_limit
+        self._retention_days = retention_days
+        self._queue: List[Dict[str, Any]] = []
+        self._flush_task: Optional[asyncio.Task] = None
+        self._lock = asyncio.Lock()
+
+    # -- lifecycle ----------------------------------------------------------
+
+    def start(self) -> None:
+        """Start the periodic flush task on the current event loop."""
+        if self._flush_task is not None and not self._flush_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            logger.debug("AuditLogger.start() called without a running loop")
+            return
+        self._flush_task = loop.create_task(self._flush_loop())
+
+    async def close(self) -> None:
+        """Cancel the flush task and flush any queued events."""
+        if self._flush_task is not None:
+            self._flush_task.cancel()
+            try:
+                await self._flush_task
+            except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+            self._flush_task = None
+        await self.flush()
+
+    async def _flush_loop(self) -> None:
+        """Periodically drain the queue until cancelled."""
+        try:
+            while True:
+                await asyncio.sleep(self._flush_interval)
+                await self.flush()
+        except asyncio.CancelledError:
+            raise
+
+    # -- writing --------------------------------------------------------------
+
     async def log(
         self,
-        event_type: EventType,
+        event_type: "EventType | str",
         action: str,
+        *,
         actor_id: Optional[str] = None,
         actor_email: Optional[str] = None,
         target_id: Optional[str] = None,
@@ -127,243 +292,167 @@ class AuditLogger:
         organization_id: Optional[str] = None,
         severity: str = "info",
         status: str = "success",
-        sync: bool = False
-    ):
-        """
-        Log an audit event
-        
-        Args:
-            event_type: Type of event
-            action: Human-readable action description
-            actor_id: ID of the user who performed the action
-            actor_email: Email of the actor
-            target_id: ID of the target resource
-            target_type: Type of target resource
-            ip_address: IP address of the request
-            user_agent: User agent string
-            metadata: Additional event data
-            organization_id: Organization context
-            severity: Event severity level
-            status: Event status
-            sync: If True, write immediately (default: batched)
+        sync: bool = False,
+    ) -> AuditEvent:
+        """Record an audit event.
+
+        With ``sync=True`` the event is written immediately (used for
+        security-critical events); otherwise it is queued and flushed by the
+        periodic task or when the queue reaches ``queue_limit``.
         """
         event = AuditEvent(
-            id=str(uuid.uuid4()),
-            event_type=event_type,
-            actor_id=actor_id,
+            id=secrets.token_hex(16),
+            event_type=_coerce_event_type(event_type).value,
+            action=str(action),
+            timestamp=_utcnow(),
+            actor=actor_id,
             actor_email=actor_email,
-            target_id=target_id,
+            target=target_id,
             target_type=target_type,
-            action=action,
-            timestamp=datetime.utcnow(),
             ip_address=ip_address,
             user_agent=user_agent,
-            metadata=metadata or {},
+            metadata=dict(metadata or {}),
             organization_id=organization_id,
             severity=severity,
-            status=status
+            status=status,
         )
-        
-        if sync or len(self._async_queue) >= self._queue_size_limit:
-            await self._write_event(event)
-            await self._flush_queue()
-        else:
-            self._async_queue.append(event)
-    
-    async def _flush_queue(self):
-        """Flush queued events to database"""
-        if not self._async_queue:
-            return
-        
-        # Batch write
-        events_data = [self._serialize_event(e) for e in self._async_queue]
-        await self.db.save_audit_events(events_data)
-        self._async_queue = []
-    
-    async def _write_event(self, event: AuditEvent):
-        """Write a single event to database"""
-        await self.db.save_audit_event(self._serialize_event(event))
-    
+        document = event.to_dict()
+        if sync:
+            await self._db.save_audit_event(document)
+            return event
+        async with self._lock:
+            self._queue.append(document)
+            overflow = len(self._queue) >= self._queue_limit
+        if overflow:
+            await self.flush()
+        return event
+
+    async def flush(self) -> int:
+        """Persist all queued events; returns the number written."""
+        async with self._lock:
+            if not self._queue:
+                return 0
+            pending, self._queue = self._queue, []
+        try:
+            await self._db.save_audit_events(pending)
+        except Exception:
+            # Re-queue on failure so events are not lost, then surface it.
+            async with self._lock:
+                self._queue = pending + self._queue
+            logger.exception("Audit flush failed; events re-queued")
+            raise
+        return len(pending)
+
+    # -- querying -------------------------------------------------------------
+
     async def search(
         self,
-        actor_id: Optional[str] = None,
-        event_type: Optional[EventType] = None,
-        organization_id: Optional[str] = None,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        severity: Optional[str] = None,
-        status: Optional[str] = None,
+        *,
+        event_types: Optional[List[str]] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Search the audit trail via the db contract; returns (rows, total)."""
+        return await self._db.search_audit_events(
+            event_types=list(event_types) if event_types else None,
+            actor=actor,
+            target=target,
+            start=start,
+            end=end,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def get_event(self, event_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch one audit event by id."""
+        return await self._db.get_audit_event(event_id)
+
+    async def user_timeline(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
+        """Recent events where the user is the actor."""
+        rows, _ = await self.search(actor=user_id, limit=limit)
+        return rows
+
+    async def security_events(
+        self,
+        *,
+        since: Optional[datetime] = None,
         limit: int = 100,
-        offset: int = 0
-    ) -> List[AuditEvent]:
-        """
-        Search audit logs with filters
-        
-        Returns:
-            List of matching audit events
-        """
-        filters = {
-            "actor_id": actor_id,
-            "event_type": event_type.value if event_type else None,
-            "organization_id": organization_id,
-            "start_date": start_date.isoformat() if start_date else None,
-            "end_date": end_date.isoformat() if end_date else None,
-            "severity": severity,
-            "status": status,
-            "limit": limit,
-            "offset": offset
-        }
-        
-        # Remove None filters
-        filters = {k: v for k, v in filters.items() if v is not None}
-        
-        events_data = await self.db.search_audit_events(filters)
-        return [self._deserialize_event(e) for e in events_data]
-    
-    async def get_event(self, event_id: str) -> Optional[AuditEvent]:
-        """Get a specific audit event by ID"""
-        event_data = await self.db.get_audit_event(event_id)
-        if not event_data:
-            return None
-        return self._deserialize_event(event_data)
-    
-    async def get_user_timeline(
-        self,
-        user_id: str,
-        limit: int = 50
-    ) -> List[AuditEvent]:
-        """Get audit timeline for a specific user"""
-        return await self.search(actor_id=user_id, limit=limit)
-    
-    async def get_security_events(
-        self,
-        organization_id: Optional[str] = None,
-        limit: int = 100
-    ) -> List[AuditEvent]:
-        """Get security-related events"""
-        security_types = [
-            EventType.SUSPICIOUS_ACTIVITY,
-            EventType.RATE_LIMIT_EXCEEDED,
-            EventType.ACCOUNT_LOCKED,
-            EventType.ACCOUNT_UNLOCKED,
-            EventType.LOGIN_FAILED
-        ]
-        
-        events = []
-        for event_type in security_types:
-            type_events = await self.search(
-                event_type=event_type,
-                organization_id=organization_id,
-                limit=limit // len(security_types)
-            )
-            events.extend(type_events)
-        
-        # Sort by timestamp descending
-        events.sort(key=lambda e: e.timestamp, reverse=True)
-        return events[:limit]
-    
+    ) -> List[Dict[str, Any]]:
+        """Recent security-relevant events (failed logins, lockouts, ...)."""
+        rows, _ = await self.search(
+            event_types=[event.value for event in SECURITY_EVENT_TYPES],
+            start=since,
+            limit=limit,
+        )
+        return rows
+
+    async def get_statistics(self, *, since: Optional[datetime] = None) -> Dict[str, Any]:
+        """Aggregate statistics from the db contract."""
+        return await self._db.get_audit_statistics(since=since)
+
+    async def get_time_series(
+        self, *, since: datetime, bucket_seconds: int
+    ) -> List[Dict[str, Any]]:
+        """Bucketed event counts from the db contract."""
+        return await self._db.get_audit_time_series(
+            since=since, bucket_seconds=bucket_seconds
+        )
+
+    async def cleanup_old_events(self) -> int:
+        """Prune events older than the retention window."""
+        cutoff = _utcnow() - timedelta(days=self._retention_days)
+        return await self._db.delete_audit_events_before(cutoff)
+
+    # -- export -----------------------------------------------------------------
+
     async def export_events(
         self,
-        filters: Dict[str, Any],
-        format: str = "json"
+        *,
+        event_types: Optional[List[str]] = None,
+        actor: Optional[str] = None,
+        target: Optional[str] = None,
+        start: Optional[datetime] = None,
+        end: Optional[datetime] = None,
+        limit: int = 10000,
+        format: str = "json",
     ) -> str:
-        """
-        Export audit events for compliance
-        
-        Args:
-            filters: Search filters
-            format: Output format (json, csv)
-        
-        Returns:
-            Exported data as string
-        """
-        events = await self.search(**filters, limit=10000)
-        
-        if format == "json":
-            return json.dumps([self._serialize_event(e) for e in events], indent=2)
-        elif format == "csv":
-            return self._export_csv(events)
-        else:
-            raise ValueError(f"Unsupported format: {format}")
-    
-    def _export_csv(self, events: List[AuditEvent]) -> str:
-        """Export events as CSV"""
-        headers = ["id", "timestamp", "event_type", "actor_email", "action", "ip_address", "status", "severity"]
-        lines = [",".join(headers)]
-        
-        for event in events:
-            row = [
-                event.id,
-                event.timestamp.isoformat(),
-                event.event_type.value,
-                event.actor_email or "",
-                event.action.replace(",", ";"),  # Escape commas
-                event.ip_address or "",
-                event.status,
-                event.severity
-            ]
-            lines.append(",".join(row))
-        
-        return "\n".join(lines)
-    
-    async def cleanup_old_events(self):
-        """Remove events older than retention period"""
-        cutoff_date = datetime.utcnow() - timedelta(days=self._retention_days)
-        deleted_count = await self.db.delete_audit_events_before(cutoff_date)
-        return deleted_count
-    
-    async def get_statistics(
-        self,
-        start_date: datetime,
-        end_date: datetime,
-        group_by: str = "event_type"
-    ) -> Dict[str, Any]:
-        """Get audit log statistics"""
-        stats = await self.db.get_audit_statistics(start_date, end_date, group_by)
-        return stats
-    
-    def _serialize_event(self, event: AuditEvent) -> Dict:
-        """Serialize event for storage"""
-        return {
-            "id": event.id,
-            "event_type": event.event_type.value,
-            "actor_id": event.actor_id,
-            "actor_email": event.actor_email,
-            "target_id": event.target_id,
-            "target_type": event.target_type,
-            "action": event.action,
-            "timestamp": event.timestamp.isoformat(),
-            "ip_address": event.ip_address,
-            "user_agent": event.user_agent,
-            "metadata": event.metadata,
-            "organization_id": event.organization_id,
-            "severity": event.severity,
-            "status": event.status
-        }
-    
-    def _deserialize_event(self, data: Dict) -> AuditEvent:
-        """Deserialize event from storage"""
-        return AuditEvent(
-            id=data["id"],
-            event_type=EventType(data["event_type"]),
-            actor_id=data.get("actor_id"),
-            actor_email=data.get("actor_email"),
-            target_id=data.get("target_id"),
-            target_type=data.get("target_type"),
-            action=data["action"],
-            timestamp=datetime.fromisoformat(data["timestamp"]),
-            ip_address=data.get("ip_address"),
-            user_agent=data.get("user_agent"),
-            metadata=data.get("metadata", {}),
-            organization_id=data.get("organization_id"),
-            severity=data.get("severity", "info"),
-            status=data.get("status", "success")
+        """Export matching events as JSON or CSV (CSV uses QUOTE_ALL)."""
+        rows, _total = await self.search(
+            event_types=event_types,
+            actor=actor,
+            target=target,
+            start=start,
+            end=end,
+            limit=limit,
         )
-    
-    async def __aenter__(self):
-        """Async context manager entry"""
-        return self
-    
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        """Async context manager exit - flush remaining events"""
-        await self._flush_queue()
+        if format == "json":
+            return json.dumps(
+                [self._export_dict(row) for row in rows], indent=2, default=str
+            )
+        if format == "csv":
+            return self._export_csv(rows)
+        raise ValueError(f"Unsupported export format: {format!r}")
+
+    @staticmethod
+    def _export_dict(row: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: _serialize_timestamp(row.get(key)) for key in _CSV_COLUMNS}
+
+    @staticmethod
+    def _export_csv(rows: List[Dict[str, Any]]) -> str:
+        buffer = io.StringIO()
+        writer = csv.writer(buffer, quoting=csv.QUOTE_ALL, lineterminator="\n")
+        writer.writerow(_CSV_COLUMNS)
+        for row in rows:
+            writer.writerow(
+                [
+                    json.dumps(row.get("metadata") or {}, default=str)
+                    if column == "metadata"
+                    else str(_serialize_timestamp(row.get(column)) if row.get(column) is not None else "")
+                    for column in _CSV_COLUMNS
+                ]
+            )
+        return buffer.getvalue()

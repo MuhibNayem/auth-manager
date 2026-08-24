@@ -1,76 +1,101 @@
+"""Database backends for the Authy package (CONTRACTS.md §4).
+
+Exports the unified :class:`AbstractDatabase` contract, the in-memory
+reference implementation, and a :func:`get_database` factory keyed on
+``DatabaseConfig.db_type`` (``sql | mongodb | dynamodb | memory``).
+
+The heavy adapters (:class:`SQLDatabase`, :class:`MongoDB`,
+:class:`DynamoDBAdapter`) are imported lazily and defensively: import
+failures in those modules must never break ``import authy_package.db``.
 """
-Enterprise Database Adapters for Authy Package.
-Supports SQL, MongoDB, DynamoDB, Cassandra, Redis, and Neo4j.
-"""
 
-from .enterprise_abstract import (
-    EnterpriseDatabaseAdapter,
-    DatabaseError,
-    ConnectionError,
-    IntegrityError,
-    NotFoundError
-)
+from __future__ import annotations
 
-from .enterprise_utils import (
-    CircuitBreaker,
-    CircuitBreakerConfig,
-    RetryConfig,
-    with_retry,
-    ConnectionPool,
-    PoolConfig,
-    ObservabilityMixin
-)
+import importlib
+import logging
+from typing import Any, Dict
 
-# Built-in adapters
-try:
-    from .sql import SQLDatabase
-except ImportError:
-    pass
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.db.memory import InMemoryDatabase
+from authy_package.errors import ConfigError
 
-try:
-    from .mongodb import MongoDBDatabase
-except ImportError:
-    pass
-
-try:
-    from .dynamodb_adapter import DynamoDBAdapter
-except ImportError:
-    pass
-
-try:
-    from .cassandra_adapter import CassandraAdapter
-except ImportError:
-    pass
-
-try:
-    from .redis_adapter import RedisAdapter
-except ImportError:
-    pass
-
-try:
-    from .neo4j_adapter import Neo4jAdapter
-except ImportError:
-    pass
+logger = logging.getLogger("authy.db")
 
 __all__ = [
-    # Abstract & Utils
-    'EnterpriseDatabaseAdapter',
-    'DatabaseError',
-    'ConnectionError',
-    'IntegrityError',
-    'NotFoundError',
-    'CircuitBreaker',
-    'CircuitBreakerConfig',
-    'RetryConfig',
-    'with_retry',
-    'ConnectionPool',
-    'PoolConfig',
-    'ObservabilityMixin',
-    # Adapters
-    'SQLDatabase',
-    'MongoDBDatabase',
-    'DynamoDBAdapter',
-    'CassandraAdapter',
-    'RedisAdapter',
-    'Neo4jAdapter'
+    "AbstractDatabase",
+    "InMemoryDatabase",
+    "SQLDatabase",
+    "MongoDB",
+    "DynamoDBAdapter",
+    "get_database",
 ]
+
+#: module path -> class name for lazily imported adapters.
+_ADAPTERS: Dict[str, tuple] = {
+    "SQLDatabase": (".sql", "SQLDatabase"),
+    "MongoDB": (".mongodb", "MongoDB"),
+    "DynamoDBAdapter": (".dynamodb_adapter", "DynamoDBAdapter"),
+}
+
+_ADAPTER_ALIASES: Dict[str, str] = {
+    # Legacy name kept importable for one release.
+    "MongoDBDatabase": "MongoDB",
+}
+
+
+def _load_adapter(name: str) -> Any:
+    """Lazily import an adapter class; raise informative ImportError on failure."""
+    module_path, class_name = _ADAPTERS[name]
+    try:
+        module = importlib.import_module(module_path, __name__)
+    except Exception as exc:
+        raise ImportError(
+            f"Database adapter {name!r} is unavailable: failed to import "
+            f"authy_package.db{module_path}: {exc}"
+        ) from exc
+    try:
+        return getattr(module, class_name)
+    except AttributeError as exc:
+        raise ImportError(
+            f"Database adapter {name!r} is unavailable: "
+            f"authy_package.db{module_path} has no class {class_name!r}"
+        ) from exc
+
+
+def __getattr__(name: str) -> Any:
+    """PEP 562 lazy, guarded adapter imports."""
+    resolved = _ADAPTER_ALIASES.get(name, name)
+    if resolved in _ADAPTERS:
+        return _load_adapter(resolved)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def get_database(config: Any) -> AbstractDatabase:
+    """Create a database backend from configuration.
+
+    Args:
+        config: An :class:`~authy_package.config.AuthConfig` (its ``database``
+            attribute is used) or a
+            :class:`~authy_package.config.DatabaseConfig` directly.
+
+    Returns:
+        An :class:`AbstractDatabase` implementation for ``db_type``.
+
+    Raises:
+        ConfigError: On an unsupported ``db_type``.
+        ImportError: When the requested adapter module cannot be imported.
+    """
+    db_config = getattr(config, "database", config)
+    db_type = getattr(db_config, "db_type", None)
+    if db_type == "memory":
+        return InMemoryDatabase()
+    if db_type == "sql":
+        return _load_adapter("SQLDatabase")(db_config)
+    if db_type == "mongodb":
+        return _load_adapter("MongoDB")(db_config)
+    if db_type == "dynamodb":
+        return _load_adapter("DynamoDBAdapter")(db_config)
+    raise ConfigError(
+        f"Unsupported database.db_type {db_type!r}; expected one of "
+        "'sql', 'mongodb', 'dynamodb', 'memory'"
+    )

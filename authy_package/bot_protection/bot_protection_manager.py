@@ -1,195 +1,208 @@
-"""
-Bot Protection Manager for Authy Package.
+"""Bot protection manager (CONTRACTS.md §0, §3, §3.1).
 
-Provides comprehensive bot protection with CAPTCHA verification, rate limiting,
-and behavioral analysis.
+Layers of defense around CAPTCHA verification:
 
-Usage:
-    from authy_package.bot_protection import BotProtectionManager, hCaptchaProvider
-    
-    # Setup provider
-    provider = hCaptchaProvider.from_env()
-    
-    # Create manager with cache (Redis recommended)
-    bot_manager = BotProtectionManager(
-        provider=provider,
-        cache=redis_cache_instance,
-        enable_rate_limiting=True,
-        max_requests_per_minute=10
-    )
-    
-    # Verify CAPTCHA on login
-    result = await bot_manager.verify_captcha(
-        token="captcha_token_from_frontend",
-        ip_address=request.client.host,
-        action="login"
-    )
-    
-    if not result.is_human:
-        raise SuspiciousActivityError("Bot detected!")
-    
-    # Check rate limit
-    is_allowed = await bot_manager.check_rate_limit("login:user@example.com")
+- Sliding-window rate limiting backed by the §3 cache list primitives
+  (``lpush``/``lrange``/``expire``); expired timestamps are trimmed on every
+  read so windows cannot grow unbounded.
+- Behavioral heuristics for user agents and IP addresses. The IP checks are
+  an HONEST local heuristic (loopback / link-local / cloud metadata ranges),
+  not threat intelligence — they flag "not a typical public client address".
+- Risk scoring in [0.0, 1.0] combined coherently: CAPTCHA failures and
+  behavioral flags can only RAISE risk, never lower a provider verdict.
+
+Rate-limit keys live in the §3.1 ``authy:ratelimit:{scope}:{id}`` namespace.
 """
 
+from __future__ import annotations
+
+import ipaddress
+import json
+import logging
 import time
-from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+
+from authy_package.cache import AbstractCache, InMemoryCache
 
 from .abstract_provider import (
     AbstractCaptchaProvider,
-    CaptchaVerificationResult,
     BehavioralAnalysis,
     BotProtectionError,
+    CaptchaVerificationResult,
     RateLimitExceededError,
-    SuspiciousActivityError,
-    RiskLevel
+    RiskLevel,
 )
+
+logger = logging.getLogger("authy.bot_protection.manager")
+
+__all__ = ["BotProtectionManager"]
+
+#: Cloud instance-metadata IPs seen in SSRF abuse; requests claiming these
+#: source addresses are almost never real end-user clients.
+_CLOUD_METADATA_IPS = frozenset({"169.254.169.254", "fd00:ec2::254"})
+
+#: Upper bound for the per-action analytics ledger.
+_ACTION_LOG_MAX_ENTRIES = 100
 
 
 class BotProtectionManager:
-    """
-    Manages bot protection with multiple layers of defense.
-    
+    """Manages CAPTCHA verification, rate limiting and behavioral analysis.
+
     Features:
-    - CAPTCHA verification (hCaptcha, reCAPTCHA, etc.)
-    - Rate limiting per user/IP/action
-    - Behavioral analysis (user agent, IP patterns, etc.)
-    - Configurable risk thresholds
-    - Comprehensive logging and monitoring
+    - CAPTCHA verification (hCaptcha, reCAPTCHA, ...) via a provider
+    - Sliding-window per-minute/per-hour rate limiting (cache list primitives)
+    - User-agent and IP heuristics (documented as heuristics, not TI feeds)
+    - Coherent combined risk scoring with configurable thresholds
     """
-    
-    # Common bot indicators in user agents
+
+    #: Common bot indicators in user agents (substring match, lower-cased).
     BOT_USER_AGENT_PATTERNS = [
-        'bot', 'crawler', 'spider', 'scraper', 'curl', 'wget',
-        'python-requests', 'httpx', 'java/', 'go-http-client'
+        "bot",
+        "crawler",
+        "spider",
+        "scraper",
+        "curl",
+        "wget",
+        "python-requests",
+        "httpx",
+        "java/",
+        "go-http-client",
     ]
-    
-    # Suspicious IP patterns (simplified - use real threat intelligence in production)
-    SUSPICIOUS_IP_PATTERNS = []
-    
+
     def __init__(
         self,
-        provider: AbstractCaptchaProvider,
-        cache: Optional[Any] = None,
+        provider: Optional[AbstractCaptchaProvider],
+        cache: Optional[AbstractCache] = None,
+        *,
         enable_rate_limiting: bool = True,
         enable_behavioral_analysis: bool = True,
         max_requests_per_minute: int = 10,
         max_requests_per_hour: int = 100,
         captcha_required_actions: Optional[List[str]] = None,
         risk_threshold_medium: float = 0.5,
-        risk_threshold_high: float = 0.8
-    ):
+        risk_threshold_high: float = 0.8,
+    ) -> None:
+        """Initialize the manager.
+
+        Args:
+            provider: CAPTCHA provider; ``None`` disables CAPTCHA checks but
+                still allows rate limiting and behavioral analysis.
+            cache: AbstractCache implementation; defaults to a private
+                :class:`InMemoryCache` (single-process only).
+            enable_rate_limiting: Toggle the sliding-window limiter.
+            enable_behavioral_analysis: Toggle UA/IP heuristics.
+            max_requests_per_minute: Per-identifier minute budget.
+            max_requests_per_hour: Per-identifier hour budget.
+            captcha_required_actions: Actions that always require CAPTCHA.
+            risk_threshold_medium: Score at or above which risk is MEDIUM.
+            risk_threshold_high: Score at or above which risk is HIGH.
         """
-        Initialize Bot Protection Manager.
-        
-        :param provider: CAPTCHA provider instance
-        :param cache: Cache instance for rate limiting (Redis recommended)
-        :param enable_rate_limiting: Enable rate limiting
-        :param enable_behavioral_analysis: Enable behavioral analysis
-        :param max_requests_per_minute: Max requests per minute per identifier
-        :param max_requests_per_hour: Max requests per hour per identifier
-        :param captcha_required_actions: Actions that always require CAPTCHA
-        :param risk_threshold_medium: Risk score threshold for medium risk
-        :param risk_threshold_high: Risk score threshold for high risk
-        """
+        if max_requests_per_minute <= 0 or max_requests_per_hour <= 0:
+            raise ValueError("rate limits must be positive")
+        if not 0.0 < risk_threshold_medium <= risk_threshold_high <= 1.0:
+            raise ValueError("risk thresholds must satisfy 0 < medium <= high <= 1")
+
         self.provider = provider
-        self.cache = cache
+        self.cache: AbstractCache = cache if cache is not None else InMemoryCache()
         self.enable_rate_limiting = enable_rate_limiting
         self.enable_behavioral_analysis = enable_behavioral_analysis
         self.max_requests_per_minute = max_requests_per_minute
         self.max_requests_per_hour = max_requests_per_hour
-        self.captcha_required_actions = captcha_required_actions or ["login", "register", "password_reset"]
+        self.captcha_required_actions = captcha_required_actions or [
+            "login",
+            "register",
+            "password_reset",
+        ]
         self.risk_threshold_medium = risk_threshold_medium
         self.risk_threshold_high = risk_threshold_high
-        
-        # In-memory fallback if no cache provided
-        self._memory_store: Dict[str, List[float]] = {}
-    
-    def _get_rate_limit_key(self, identifier: str, window: str) -> str:
-        """Generate rate limit cache key."""
-        return f"ratelimit:{identifier}:{window}"
-    
-    async def _store_request_timestamp(self, key: str, timestamp: float, ttl: int):
-        """Store request timestamp in cache."""
-        if self.cache:
-            # Use Redis list to store timestamps
-            await self.cache.lpush(key, str(timestamp))
-            await self.cache.expire(key, ttl)
-        else:
-            if key not in self._memory_store:
-                self._memory_store[key] = []
-            self._memory_store[key].append(timestamp)
-            # Clean old entries
-            cutoff = time.time() - ttl
-            self._memory_store[key] = [ts for ts in self._memory_store[key] if ts > cutoff]
-    
-    async def _get_request_count(self, key: str, window_seconds: int) -> int:
-        """Get request count in the specified window."""
-        current_time = time.time()
-        cutoff = current_time - window_seconds
-        
-        if self.cache:
-            # Get all timestamps from Redis list
-            timestamps = await self.cache.lrange(key, 0, -1)
-            if not timestamps:
-                return 0
-            # Count timestamps within window
-            return sum(1 for ts in timestamps if float(ts) > cutoff)
-        else:
-            if key not in self._memory_store:
-                return 0
-            return sum(1 for ts in self._memory_store[key] if ts > cutoff)
-    
-    async def check_rate_limit(self, identifier: str) -> bool:
+
+    # -- key schema (§3.1) ------------------------------------------------------
+
+    @staticmethod
+    def _rate_limit_key(identifier: str, window: str) -> str:
+        """Sliding-window list key in the §3.1 ratelimit namespace."""
+        return f"authy:ratelimit:bot:{window}:{identifier}"
+
+    # -- sliding window primitives ------------------------------------------------
+
+    async def _window_count(self, key: str, window_seconds: int) -> int:
+        """Count timestamps inside ``window_seconds`` and trim the rest.
+
+        Trimming keeps the stored list bounded (the AbstractCache contract has
+        no ``ltrim`` primitive, so the list is rebuilt from the surviving
+        entries). TTL is refreshed on every maintenance pass.
         """
-        Check if an identifier has exceeded rate limits.
-        
-        :param identifier: Unique identifier (e.g., "login:user@example.com" or IP address)
-        :return: True if within limits, False if exceeded
-        :raises: RateLimitExceededError if limit exceeded
+        now = time.time()
+        cutoff = now - window_seconds
+        raw = await self.cache.lrange(key, 0, -1)
+
+        kept: List[str] = []
+        for value in raw:
+            try:
+                ts = float(value)
+            except (TypeError, ValueError):
+                continue  # drop malformed entries
+            if ts > cutoff:
+                kept.append(value)
+
+        if len(kept) != len(raw):
+            await self.cache.delete(key)
+            if kept:
+                # kept is newest-first (lpush order); reinsert preserving order.
+                await self.cache.lpush(key, *reversed(kept))
+
+        if kept:
+            await self.cache.expire(key, window_seconds)
+        return len(kept)
+
+    async def check_rate_limit(self, identifier: str) -> bool:
+        """Record a request and enforce per-minute/per-hour budgets.
+
+        Args:
+            identifier: Unique scope id (e.g. ``"login:user@example.com"``).
+
+        Returns:
+            ``True`` when the request is within limits.
+
+        Raises:
+            RateLimitExceededError: When a budget is exhausted; carries
+                ``retry_after`` seconds.
         """
         if not self.enable_rate_limiting:
             return True
-        
-        current_time = time.time()
-        
-        # Check per-minute limit
-        minute_key = self._get_rate_limit_key(identifier, "minute")
-        minute_count = await self._get_request_count(minute_key, 60)
-        
+
+        minute_key = self._rate_limit_key(identifier, "minute")
+        minute_count = await self._window_count(minute_key, 60)
         if minute_count >= self.max_requests_per_minute:
+            logger.warning("Per-minute rate limit exceeded for %s", identifier)
             raise RateLimitExceededError(
                 f"Rate limit exceeded: {minute_count} requests in the last minute",
-                retry_after=60
+                retry_after=60,
             )
-        
-        # Check per-hour limit
-        hour_key = self._get_rate_limit_key(identifier, "hour")
-        hour_count = await self._get_request_count(hour_key, 3600)
-        
+
+        hour_key = self._rate_limit_key(identifier, "hour")
+        hour_count = await self._window_count(hour_key, 3600)
         if hour_count >= self.max_requests_per_hour:
+            logger.warning("Per-hour rate limit exceeded for %s", identifier)
             raise RateLimitExceededError(
                 f"Rate limit exceeded: {hour_count} requests in the last hour",
-                retry_after=3600
+                retry_after=3600,
             )
-        
-        # Record this request
-        await self._store_request_timestamp(minute_key, current_time, 60)
-        await self._store_request_timestamp(hour_key, current_time, 3600)
-        
+
+        timestamp = str(time.time())
+        await self.cache.lpush(minute_key, timestamp)
+        await self.cache.expire(minute_key, 60)
+        await self.cache.lpush(hour_key, timestamp)
+        await self.cache.expire(hour_key, 3600)
         return True
-    
+
+    # -- behavioral heuristics ---------------------------------------------------
+
     def analyze_user_agent(self, user_agent: Optional[str]) -> BehavioralAnalysis:
-        """
-        Analyze user agent for bot indicators.
-        
-        :param user_agent: User agent string from request
-        :return: BehavioralAnalysis with findings
-        """
-        flags = []
+        """Analyze a user agent string for bot indicators (heuristic)."""
+        flags: List[str] = []
         risk_score = 0.0
-        
+
         if not user_agent:
             flags.append("missing_user_agent")
             risk_score += 0.5
@@ -200,129 +213,139 @@ class BotProtectionManager:
                     flags.append(f"bot_pattern:{pattern}")
                     risk_score += 0.3
                     break
-            
-            # Check for very short user agents (often bots)
             if len(user_agent) < 20:
                 flags.append("short_user_agent")
                 risk_score += 0.2
-        
+
         return BehavioralAnalysis(
             is_suspicious=len(flags) > 0,
             risk_score=min(risk_score, 1.0),
             flags=flags,
-            details={"user_agent": user_agent}
+            details={"user_agent": user_agent},
         )
-    
+
     def analyze_ip_address(self, ip_address: Optional[str]) -> BehavioralAnalysis:
+        """Analyze a client IP with a LOCAL heuristic (not threat intelligence).
+
+        Flags addresses that are implausible as public end-user clients:
+        unparseable values, cloud instance-metadata endpoints, link-local,
+        loopback and RFC1918/ULA private ranges. Real deployments should pair
+        this with a threat-intelligence feed.
         """
-        Analyze IP address for suspicious patterns.
-        
-        :param ip_address: IP address from request
-        :return: BehavioralAnalysis with findings
-        """
-        flags = []
+        flags: List[str] = []
         risk_score = 0.0
-        
+
         if not ip_address:
             flags.append("missing_ip")
             risk_score += 0.3
-        else:
-            # Check for known suspicious patterns
-            for pattern in self.SUSPICIOUS_IP_PATTERNS:
-                if ip_address.startswith(pattern):
-                    flags.append(f"suspicious_ip_pattern:{pattern}")
-                    risk_score += 0.5
-        
+            return BehavioralAnalysis(
+                is_suspicious=True,
+                risk_score=risk_score,
+                flags=flags,
+                details={"ip_address": None},
+            )
+
+        try:
+            addr = ipaddress.ip_address(ip_address)
+        except ValueError:
+            flags.append("unparseable_ip")
+            return BehavioralAnalysis(
+                is_suspicious=True,
+                risk_score=0.3,
+                flags=flags,
+                details={"ip_address": ip_address},
+            )
+
+        if ip_address in _CLOUD_METADATA_IPS:
+            flags.append("cloud_metadata_ip")
+            risk_score += 0.8
+        elif addr.is_link_local:
+            flags.append("link_local_ip")
+            risk_score += 0.4
+        elif addr.is_loopback:
+            flags.append("loopback_ip")
+            risk_score += 0.4
+        elif addr.is_private:
+            flags.append("private_range_ip")
+            risk_score += 0.2
+
         return BehavioralAnalysis(
             is_suspicious=len(flags) > 0,
             risk_score=min(risk_score, 1.0),
             flags=flags,
-            details={"ip_address": ip_address}
+            details={"ip_address": ip_address},
         )
-    
+
+    # -- CAPTCHA ----------------------------------------------------------------
+
     async def verify_captcha(
         self,
         token: str,
         ip_address: Optional[str] = None,
         user_agent: Optional[str] = None,
-        action: Optional[str] = None
+        action: Optional[str] = None,
     ) -> CaptchaVerificationResult:
+        """Verify a CAPTCHA token and layer behavioral analysis on top.
+
+        Behavioral risk can only RAISE the provider's risk assessment; a
+        successful CAPTCHA is never silently downgraded below MEDIUM signals.
+
+        Raises:
+            BotProtectionError: When no provider is configured.
         """
-        Verify CAPTCHA token with additional behavioral checks.
-        
-        :param token: CAPTCHA response token from frontend
-        :param ip_address: Client IP address
-        :param user_agent: Client user agent string
-        :param action: Action being performed (login, register, etc.)
-        :return: CaptchaVerificationResult with comprehensive assessment
-        """
-        # Verify CAPTCHA with provider
+        if self.provider is None:
+            raise BotProtectionError(
+                "No CAPTCHA provider configured; cannot verify tokens"
+            )
+
         result = await self.provider.verify_token(token, remote_ip=ip_address)
-        
-        # Add behavioral analysis if enabled
+
         if self.enable_behavioral_analysis:
             ua_analysis = self.analyze_user_agent(user_agent)
             ip_analysis = self.analyze_ip_address(ip_address)
-            
-            # Combine risk scores
             behavioral_risk = max(ua_analysis.risk_score, ip_analysis.risk_score)
-            
-            # Adjust final risk score
-            if behavioral_risk > 0.5:
-                result.risk_score = min(result.risk_score + behavioral_risk * 0.5, 1.0)
+            behavior_flags = ua_analysis.flags + ip_analysis.flags
+
+            if behavioral_risk > 0.0:
+                result.risk_score = min(
+                    result.risk_score + behavioral_risk * 0.5, 1.0
+                )
                 result.risk_level = self._calculate_risk_level(result.risk_score)
-                
-                # Flag as non-human if behavioral risk is very high
+                result.flags.extend(behavior_flags)
+
                 if behavioral_risk > 0.8:
                     result.is_human = False
-                    result.flags = getattr(result, 'flags', []) + ua_analysis.flags + ip_analysis.flags
-        
+
         return result
-    
+
     def _calculate_risk_level(self, risk_score: float) -> RiskLevel:
-        """Calculate risk level from score."""
+        """Map a score in [0, 1] to a RiskLevel using configured thresholds."""
         if risk_score >= self.risk_threshold_high:
             return RiskLevel.HIGH
-        elif risk_score >= self.risk_threshold_medium:
+        if risk_score >= self.risk_threshold_medium:
             return RiskLevel.MEDIUM
-        else:
-            return RiskLevel.LOW
-    
-    async def should_require_captcha(self, action: str, risk_score: float = 0.0) -> bool:
-        """
-        Determine if CAPTCHA should be required for an action.
-        
-        :param action: The action being performed
-        :param risk_score: Current risk score from other analyses
-        :return: True if CAPTCHA is required
-        """
-        # Always require for certain actions
+        return RiskLevel.LOW
+
+    async def should_require_captcha(
+        self, action: str, risk_score: float = 0.0
+    ) -> bool:
+        """Decide whether CAPTCHA is required for ``action``."""
         if action in self.captcha_required_actions:
             return True
-        
-        # Require if risk score is high
-        if risk_score >= self.risk_threshold_high:
-            return True
-        
-        return False
-    
-    async def record_action(self, identifier: str, action: str, success: bool):
-        """
-        Record an action for analytics and pattern detection.
-        
-        :param identifier: User identifier
-        :param action: Action performed
-        :param success: Whether the action was successful
-        """
-        if not self.cache:
-            return
-        
-        key = f"action:{identifier}:{action}"
-        data = {
-            "timestamp": time.time(),
-            "success": success
-        }
-        
-        # Store for pattern analysis (could be enhanced with ML in future)
-        await self.cache.lpush(key, str(data))
-        await self.cache.expire(key, 86400)  # Keep for 24 hours
+        return risk_score >= self.risk_threshold_high
+
+    async def record_action(
+        self, identifier: str, action: str, success: bool
+    ) -> None:
+        """Append an action to a bounded 24h analytics ledger."""
+        key = f"authy:bot:action:{identifier}:{action}"
+        entry = json.dumps({"timestamp": time.time(), "success": bool(success)})
+        await self.cache.lpush(key, entry)
+        # Bounded ledger: trim anything beyond the newest N entries.
+        all_entries = await self.cache.lrange(key, 0, -1)
+        if len(all_entries) > _ACTION_LOG_MAX_ENTRIES:
+            await self.cache.delete(key)
+            await self.cache.lpush(
+                key, *reversed(all_entries[:_ACTION_LOG_MAX_ENTRIES])
+            )
+        await self.cache.expire(key, 86400)

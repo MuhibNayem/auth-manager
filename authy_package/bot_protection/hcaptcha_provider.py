@@ -12,8 +12,8 @@ Configuration:
     
     Option 2 - Environment variables (recommended):
         # Set these in your .env or environment
-        HCATCHA_SECRET_KEY=your_secret_key
-        HCATCHA_SITE_KEY=your_site_key
+        HCAPTCHA_SECRET_KEY=your_secret_key
+        HCAPTCHA_SITE_KEY=your_site_key
         
         provider = hCaptchaProvider.from_env()
 
@@ -128,9 +128,12 @@ class hCaptchaProvider(AbstractCaptchaProvider):
             "high": 0.9
         }
     
-    @property
-    async def client(self) -> httpx.AsyncClient:
-        """Lazy initialization of HTTP client."""
+    async def get_client(self) -> httpx.AsyncClient:
+        """Lazily construct the shared async HTTP client.
+
+        This is an async METHOD (not a property): awaiting a coroutine
+        returned by a property is a footgun and defeats client caching.
+        """
         if self._client is None or self._client.is_closed:
             self._client = httpx.AsyncClient(timeout=self.config.timeout_seconds)
         return self._client
@@ -169,7 +172,7 @@ class hCaptchaProvider(AbstractCaptchaProvider):
         :return: CaptchaVerificationResult with verification status
         """
         try:
-            client = await self.client
+            client = await self.get_client()
             
             # Prepare form data
             data = {

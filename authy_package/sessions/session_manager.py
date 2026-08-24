@@ -1,26 +1,66 @@
-"""
-Advanced Session Management
+"""Advanced session management on the foundation contracts.
 
-Features:
-- Multi-device session tracking
-- Automatic token refresh
-- Session revocation
-- Device fingerprinting
-- Predictive session pre-fetching
-- Concurrent session limits
+Rebuilt per CONTRACTS.md §2/§3/§6:
+
+- Configuration comes from the canonical :class:`AuthConfig` attributes
+  (``session_expiry_seconds``, ``max_concurrent_sessions``); JWTs are
+  issued/validated through :class:`JWTTokenManager` and the ``type`` claim
+  is enforced on every validation.
+- Sessions are cached under §3.1 keys (``authy:session:{session_id}`` and
+  ``authy:user_sessions:{user_id}``) and persisted through the db contract
+  (``save_session`` / ``revoke_session`` / ``get_active_sessions``).
+- Refresh rotates the session's tokens; the oldest sessions are evicted
+  beyond ``max_concurrent_sessions``.
+- All timestamps are timezone-aware UTC; last-active updates run as
+  background tasks whose references are retained until completion.
 """
+
+from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any
+import hashlib
+import logging
+import secrets
 from dataclasses import dataclass, field
-import jwt
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Set
+
+from authy_package.cache.abstract_cache import AbstractCache
+from authy_package.config import AuthConfig
+from authy_package.db.abstract_db import AbstractDatabase
+from authy_package.errors import AuthenticationError, ConfigError, TokenError
+from authy_package.utils.security import JWTTokenManager
+
+logger = logging.getLogger("authy.sessions")
+
+__all__ = ["Session", "SessionManager"]
+
+#: §3.1 cache key schema.
+SESSION_KEY_TEMPLATE = "authy:session:{session_id}"
+USER_SESSIONS_KEY_TEMPLATE = "authy:user_sessions:{user_id}"
+REFRESH_MAP_KEY_TEMPLATE = "authy:session_refresh:{token_hash}"
+
+
+def _utcnow() -> datetime:
+    """Timezone-aware UTC now (§0.5)."""
+    return datetime.now(timezone.utc)
+
+
+def _parse_ts(value: Any) -> datetime:
+    """Parse an ISO-8601 timestamp, attaching UTC when naive."""
+    if isinstance(value, datetime):
+        parsed = value
+    else:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
 
 
 @dataclass
 class Session:
-    """Represents an active user session"""
+    """An active user session (multi-device aware)."""
+
     id: str
     user_id: str
     device_id: str
@@ -34,43 +74,100 @@ class Session:
     metadata: Dict[str, Any] = field(default_factory=dict)
     is_revoked: bool = False
 
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize for cache/db storage (ISO-8601 timestamps)."""
+        return {
+            "id": self.id,
+            "user_id": self.user_id,
+            "device_id": self.device_id,
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "created_at": self.created_at.isoformat(),
+            "expires_at": self.expires_at.isoformat(),
+            "last_active": self.last_active.isoformat(),
+            "ip_address": self.ip_address,
+            "user_agent": self.user_agent,
+            "metadata": self.metadata,
+            "status": "revoked" if self.is_revoked else "active",
+        }
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "Session":
+        """Rebuild a session from its stored representation."""
+        return cls(
+            id=data["id"],
+            user_id=data["user_id"],
+            device_id=data.get("device_id", ""),
+            access_token=data.get("access_token", ""),
+            refresh_token=data.get("refresh_token", ""),
+            created_at=_parse_ts(data["created_at"]),
+            expires_at=_parse_ts(data["expires_at"]),
+            last_active=_parse_ts(data.get("last_active", data["created_at"])),
+            ip_address=data.get("ip_address"),
+            user_agent=data.get("user_agent"),
+            metadata=dict(data.get("metadata") or {}),
+            is_revoked=data.get("status", "active") != "active"
+            or bool(data.get("is_revoked", False)),
+        )
+
 
 class SessionManager:
+    """Session lifecycle manager on the cache + db contracts.
+
+    Args:
+        config: Canonical :class:`AuthConfig` (session expiry, concurrent
+            session limit, JWT settings).
+        db: Database adapter (§4) — the durable session store.
+        cache: Optional cache adapter (§3) — fast path + user index.
+        token_manager: Optional pre-built :class:`JWTTokenManager`.
     """
-    Advanced session management with multi-device support
-    
-    Usage:
-        session_mgr = SessionManager(config, db, cache)
-        session = await session_mgr.create_session(user_id, device_info)
-        await session_mgr.refresh_session(session.refresh_token)
-        await session_mgr.revoke_session(session.id)
-    """
-    
-    def __init__(self, config, db, cache):
+
+    def __init__(
+        self,
+        config: AuthConfig,
+        db: AbstractDatabase,
+        cache: Optional[AbstractCache] = None,
+        token_manager: Optional[JWTTokenManager] = None,
+    ) -> None:
+        if config is None:
+            raise ConfigError("SessionManager requires an AuthConfig")
+        if db is None:
+            raise ConfigError("SessionManager requires a database adapter")
         self.config = config
         self.db = db
         self.cache = cache
-        self._session_prefix = "session:"
-        self._user_sessions_prefix = "user_sessions:"
-    
+        if token_manager is not None:
+            self.token_manager = token_manager
+        elif config.jwt_secret:
+            self.token_manager = JWTTokenManager(config)
+        else:
+            raise ConfigError(
+                "SessionManager requires config.jwt_secret (JWT token manager)"
+            )
+        #: Retained references for fire-and-forget last-active tasks (§0).
+        self._background_tasks: Set[asyncio.Task] = set()
+
+    # -- public API ------------------------------------------------------------
+
     async def create_session(
         self,
         user_id: str,
-        device_info: Dict[str, Any],
+        device_info: Optional[Dict[str, Any]] = None,
         ip_address: Optional[str] = None,
-        user_agent: Optional[str] = None
+        user_agent: Optional[str] = None,
     ) -> Session:
-        """Create a new session for a user"""
-        session_id = str(uuid.uuid4())
-        device_id = device_info.get("device_id", str(uuid.uuid4()))
-        
-        now = datetime.utcnow()
-        expires_at = now + timedelta(seconds=self.config.session_expiry)
-        
-        # Generate tokens
-        access_token = self._generate_access_token(user_id, session_id, expires_at)
-        refresh_token = self._generate_refresh_token(user_id, session_id)
-        
+        """Create a session, persist it, and enforce the concurrency limit."""
+        if not user_id or not isinstance(user_id, str):
+            raise ValueError("user_id must be a non-empty string")
+
+        session_id = secrets.token_hex(16)
+        device_info = dict(device_info or {})
+        device_id = str(device_info.get("device_id") or secrets.token_hex(8))
+        device_info["device_id"] = device_id
+
+        access_token, refresh_token = self._issue_session_tokens(user_id, session_id)
+
+        now = _utcnow()
         session = Session(
             id=session_id,
             user_id=user_id,
@@ -78,254 +175,239 @@ class SessionManager:
             access_token=access_token,
             refresh_token=refresh_token,
             created_at=now,
-            expires_at=expires_at,
+            expires_at=now + timedelta(seconds=self.config.session_expiry_seconds),
             last_active=now,
             ip_address=ip_address,
             user_agent=user_agent,
-            metadata=device_info
+            metadata=device_info,
         )
-        
-        # Store session
+
         await self._store_session(session)
         await self._index_user_session(user_id, session_id)
-        
-        # Track concurrent sessions and revoke oldest if limit exceeded
         await self._enforce_session_limit(user_id)
-        
+        logger.info("Created session %s for user %s", session_id, user_id)
         return session
-    
-    async def refresh_session(self, refresh_token: str) -> Optional[Session]:
-        """Refresh an existing session with new access token"""
-        try:
-            payload = jwt.decode(
-                refresh_token,
-                self.config.jwt_secret,
-                algorithms=[self.config.jwt_algorithm]
-            )
-            
-            session_id = payload.get("session_id")
-            user_id = payload.get("sub")
-            
-            if not session_id or not user_id:
-                return None
-            
-            session = await self._get_session(session_id)
-            if not session or session.is_revoked:
-                return None
-            
-            # Update session
-            now = datetime.utcnow()
-            session.expires_at = now + timedelta(seconds=self.config.session_expiry)
-            session.last_active = now
-            session.access_token = self._generate_access_token(
-                user_id, session_id, session.expires_at
-            )
-            
-            await self._store_session(session)
-            return session
-            
-        except jwt.ExpiredSignatureError:
-            # Refresh token expired, require re-login
-            return None
-        except jwt.InvalidTokenError:
-            return None
-    
-    async def revoke_session(self, session_id: str) -> bool:
-        """Revoke a specific session"""
-        session = await self._get_session(session_id)
-        if not session:
-            return False
-        
-        session.is_revoked = True
-        await self._store_session(session)
-        
-        # Remove from user's active sessions index
-        await self._remove_user_session(session.user_id, session_id)
-        return True
-    
-    async def revoke_all_user_sessions(self, user_id: str) -> int:
-        """Revoke all sessions for a user (useful for password changes)"""
-        session_ids = await self._get_user_sessions(user_id)
-        revoked_count = 0
-        
-        for session_id in session_ids:
-            if await self.revoke_session(session_id):
-                revoked_count += 1
-        
-        return revoked_count
-    
-    async def get_active_sessions(self, user_id: str) -> List[Session]:
-        """Get all active sessions for a user"""
-        session_ids = await self._get_user_sessions(user_id)
-        sessions = []
-        
-        for session_id in session_ids:
-            session = await self._get_session(session_id)
-            if session and not session.is_revoked:
-                sessions.append(session)
-        
-        return sessions
-    
+
     async def validate_session(self, access_token: str) -> Optional[Session]:
-        """Validate an access token and return session if valid"""
+        """Validate an access token and return its active session, if any."""
         try:
-            payload = jwt.decode(
-                access_token,
-                self.config.jwt_secret,
-                algorithms=[self.config.jwt_algorithm]
+            payload = self.token_manager.validate_token(
+                access_token, expected_type=JWTTokenManager.ACCESS
             )
-            
-            session_id = payload.get("session_id")
-            if not session_id:
-                return None
-            
-            session = await self._get_session(session_id)
-            if not session or session.is_revoked:
-                return None
-            
-            # Update last active time (async, don't wait)
-            asyncio.create_task(self._update_last_active(session_id))
-            
-            return session
-            
-        except jwt.ExpiredSignatureError:
+        except TokenError:
             return None
-        except jwt.InvalidTokenError:
+
+        session_id = payload.get("session_id")
+        if not session_id:
             return None
-    
-    def _generate_access_token(self, user_id: str, session_id: str, expires_at: datetime) -> str:
-        """Generate JWT access token"""
-        return jwt.encode(
-            {
-                "sub": user_id,
-                "session_id": session_id,
-                "exp": expires_at,
-                "iat": datetime.utcnow(),
-                "type": "access"
-            },
-            self.config.jwt_secret,
-            algorithm=self.config.jwt_algorithm
+        session = await self._get_session(str(session_id))
+        if session is None or session.is_revoked:
+            return None
+        if session.expires_at <= _utcnow():
+            return None
+        if str(payload.get("sub")) != session.user_id:
+            return None
+
+        self._schedule_last_active_update(session.id)
+        return session
+
+    async def refresh_session(self, refresh_token: str) -> Optional[Session]:
+        """Rotate a session's tokens using its refresh token.
+
+        The old tokens are replaced; a revoked/expired session returns None.
+        """
+        try:
+            payload = self.token_manager.validate_token(
+                refresh_token, expected_type=JWTTokenManager.REFRESH
+            )
+        except TokenError:
+            return None
+
+        user_id = payload.get("sub")
+        if not user_id:
+            return None
+
+        session = await self._resolve_session_for_refresh(refresh_token, str(user_id))
+        if session is None or session.is_revoked:
+            return None
+        if session.expires_at <= _utcnow():
+            return None
+
+        # Rotation: the old refresh token stops working immediately.
+        if self.cache is not None:
+            await self.cache.delete(self._refresh_map_key(refresh_token))
+
+        now = _utcnow()
+        session.expires_at = now + timedelta(seconds=self.config.session_expiry_seconds)
+        session.last_active = now
+        session.access_token, session.refresh_token = self._issue_session_tokens(
+            session.user_id, session.id
         )
-    
-    def _generate_refresh_token(self, user_id: str, session_id: str) -> str:
-        """Generate JWT refresh token (longer lived)"""
-        expires_at = datetime.utcnow() + timedelta(days=self.config.refresh_token_expiry_days)
-        return jwt.encode(
-            {
-                "sub": user_id,
-                "session_id": session_id,
-                "exp": expires_at,
-                "iat": datetime.utcnow(),
-                "type": "refresh"
-            },
-            self.config.jwt_secret,
-            algorithm=self.config.jwt_algorithm
+        await self._store_session(session)
+        logger.info("Rotated tokens for session %s", session.id)
+        return session
+
+    async def revoke_session(self, session_id: str) -> bool:
+        """Revoke one session (atomic status flip in the db)."""
+        session = await self._get_session(session_id)
+        revoked = await self.db.revoke_session(session_id)
+        if session is not None:
+            await self._drop_session_state(session.user_id, session_id)
+        if revoked:
+            logger.info("Revoked session %s", session_id)
+        return revoked
+
+    async def revoke_all_user_sessions(self, user_id: str) -> int:
+        """Revoke every active session for a user (e.g. password change)."""
+        sessions = await self.db.get_active_sessions(user_id)
+        revoked = await self.db.revoke_all_user_sessions(user_id)
+        for record in sessions:
+            await self._drop_session_state(user_id, str(record["id"]))
+        return revoked
+
+    async def get_active_sessions(self, user_id: str) -> List[Session]:
+        """All active sessions for a user, oldest first."""
+        records = await self.db.get_active_sessions(user_id)
+        sessions = [Session.from_dict(record) for record in records]
+        sessions.sort(key=lambda s: s.created_at)
+        return sessions
+
+    # -- internals -----------------------------------------------------------------
+
+    def _issue_session_tokens(self, user_id: str, session_id: str) -> tuple:
+        """Issue the session-bound access/refresh JWT pair.
+
+        The access token carries the ``session_id`` claim; the frozen
+        ``create_refresh_token`` API takes no extra claims, so the refresh
+        token is bound to the session through the
+        ``authy:session_refresh:{sha256(token)}`` cache ledger (with a db
+        record fallback when no cache is configured).
+        """
+        access_token = self.token_manager.create_access_token(
+            user_id, additional_claims={"session_id": session_id}
         )
-    
-    async def _store_session(self, session: Session):
-        """Store session in cache and database"""
-        session_data = {
-            "id": session.id,
-            "user_id": session.user_id,
-            "device_id": session.device_id,
-            "access_token": session.access_token,
-            "refresh_token": session.refresh_token,
-            "created_at": session.created_at.isoformat(),
-            "expires_at": session.expires_at.isoformat(),
-            "last_active": session.last_active.isoformat(),
-            "ip_address": session.ip_address,
-            "user_agent": session.user_agent,
-            "metadata": session.metadata,
-            "is_revoked": session.is_revoked
-        }
-        
-        # Cache with TTL
-        await self.cache.set(
-            f"{self._session_prefix}{session.id}",
-            session_data,
-            ttl=int((session.expires_at - datetime.utcnow()).total_seconds())
+        refresh_token = self.token_manager.create_refresh_token(user_id)
+        return access_token, refresh_token
+
+    @staticmethod
+    def _refresh_map_key(refresh_token: str) -> str:
+        return REFRESH_MAP_KEY_TEMPLATE.format(
+            token_hash=hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
         )
-        
-        # Persist to database
-        await self.db.save_session(session_data)
-    
+
+    async def _store_session(self, session: Session) -> None:
+        """Write-through to cache (§3.1 keys) and db (§4 session methods)."""
+        data = session.to_dict()
+        if self.cache is not None:
+            ttl = max(1, int((session.expires_at - _utcnow()).total_seconds()))
+            await self.cache.set_json(
+                SESSION_KEY_TEMPLATE.format(session_id=session.id),
+                data,
+                ttl_seconds=ttl,
+            )
+        await self.db.save_session(data)
+        if self.cache is not None and session.refresh_token:
+            ttl = max(1, int((session.expires_at - _utcnow()).total_seconds()))
+            await self.cache.set(
+                self._refresh_map_key(session.refresh_token),
+                session.id,
+                ttl_seconds=ttl,
+            )
+
     async def _get_session(self, session_id: str) -> Optional[Session]:
-        """Retrieve session from cache or database"""
-        # Try cache first
-        cached = await self.cache.get(f"{self._session_prefix}{session_id}")
-        if cached:
-            return self._deserialize_session(cached)
-        
-        # Fallback to database
+        """Cache-first lookup with db fallback (and re-cache)."""
+        if self.cache is not None:
+            data = await self.cache.get_json(
+                SESSION_KEY_TEMPLATE.format(session_id=session_id)
+            )
+            if data:
+                return Session.from_dict(data)
+
         data = await self.db.get_session(session_id)
-        if data:
-            # Re-cache
-            session = self._deserialize_session(data)
-            if not session.is_revoked:
-                ttl = int((session.expires_at - datetime.utcnow()).total_seconds())
-                if ttl > 0:
-                    await self.cache.set(
-                        f"{self._session_prefix}{session_id}",
-                        data,
-                        ttl=ttl
-                    )
-            return session
-        
-        return None
-    
-    async def _index_user_session(self, user_id: str, session_id: str):
-        """Add session to user's session index"""
-        await self.cache.sadd(f"{self._user_sessions_prefix}{user_id}", session_id)
-    
-    async def _remove_user_session(self, user_id: str, session_id: str):
-        """Remove session from user's session index"""
-        await self.cache.srem(f"{self._user_sessions_prefix}{user_id}", session_id)
-    
-    async def _get_user_sessions(self, user_id: str) -> List[str]:
-        """Get all session IDs for a user"""
-        return await self.cache.smembers(f"{self._user_sessions_prefix}{user_id}")
-    
-    async def _enforce_session_limit(self, user_id: str):
-        """Enforce maximum concurrent sessions per user"""
+        if not data:
+            return None
+        session = Session.from_dict(data)
+        if self.cache is not None and not session.is_revoked:
+            ttl = int((session.expires_at - _utcnow()).total_seconds())
+            if ttl > 0:
+                await self.cache.set_json(
+                    SESSION_KEY_TEMPLATE.format(session_id=session_id),
+                    data,
+                    ttl_seconds=ttl,
+                )
+        return session
+
+    async def _index_user_session(self, user_id: str, session_id: str) -> None:
+        if self.cache is not None:
+            await self.cache.lpush(
+                USER_SESSIONS_KEY_TEMPLATE.format(user_id=user_id), session_id
+            )
+
+    async def _drop_session_state(self, user_id: str, session_id: str) -> None:
+        """Remove cache copies and the user-index entry for one session."""
+        if self.cache is None:
+            return
+        await self.cache.delete(SESSION_KEY_TEMPLATE.format(session_id=session_id))
+        record = await self.db.get_session(session_id)
+        if record and record.get("refresh_token"):
+            await self.cache.delete(self._refresh_map_key(str(record["refresh_token"])))
+        index_key = USER_SESSIONS_KEY_TEMPLATE.format(user_id=user_id)
+        remaining = [
+            sid
+            for sid in await self.cache.lrange(index_key, 0, -1)
+            if sid != session_id
+        ]
+        await self.cache.delete(index_key)
+        if remaining:
+            await self.cache.lpush(index_key, *reversed(remaining))
+
+    async def _enforce_session_limit(self, user_id: str) -> None:
+        """Revoke the oldest sessions beyond max_concurrent_sessions."""
         max_sessions = self.config.max_concurrent_sessions
         if max_sessions <= 0:
             return
-        
-        session_ids = await self._get_user_sessions(user_id)
-        if len(session_ids) > max_sessions:
-            # Revoke oldest sessions
-            sessions = []
-            for sid in session_ids:
-                session = await self._get_session(sid)
-                if session:
-                    sessions.append(session)
-            
-            sessions.sort(key=lambda s: s.created_at)
-            sessions_to_revoke = sessions[:-max_sessions]
-            
-            for session in sessions_to_revoke:
-                await self.revoke_session(session.id)
-    
-    async def _update_last_active(self, session_id: str):
-        """Update session's last active timestamp"""
+        active = await self.db.get_active_sessions(user_id)
+        if len(active) <= max_sessions:
+            return
+        active.sort(key=lambda r: _parse_ts(r.get("created_at")))
+        for record in active[: len(active) - max_sessions]:
+            sid = str(record["id"])
+            await self.db.revoke_session(sid)
+            await self._drop_session_state(user_id, sid)
+            logger.info(
+                "Evicted session %s (user %s exceeded %d concurrent sessions)",
+                sid,
+                user_id,
+                max_sessions,
+            )
+
+    async def _resolve_session_for_refresh(
+        self, refresh_token: str, user_id: str
+    ) -> Optional[Session]:
+        """Find the session owning a refresh token (cache ledger first)."""
+        if self.cache is not None:
+            session_id = await self.cache.get(self._refresh_map_key(refresh_token))
+            if session_id:
+                return await self._get_session(str(session_id))
+            return None
+        # No cache: fall back to matching the stored token on active sessions.
+        for record in await self.db.get_active_sessions(user_id):
+            if record.get("refresh_token") == refresh_token:
+                return Session.from_dict(record)
+        return None
+
+    def _schedule_last_active_update(self, session_id: str) -> None:
+        """Fire the last-active update, retaining the task reference (§0)."""
+        task = asyncio.create_task(self._update_last_active(session_id))
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
+
+    async def _update_last_active(self, session_id: str) -> None:
         session = await self._get_session(session_id)
-        if session:
-            session.last_active = datetime.utcnow()
+        if session is None or session.is_revoked:
+            return
+        session.last_active = _utcnow()
+        try:
             await self._store_session(session)
-    
-    def _deserialize_session(self, data: Dict) -> Session:
-        """Convert dict to Session object"""
-        return Session(
-            id=data["id"],
-            user_id=data["user_id"],
-            device_id=data["device_id"],
-            access_token=data["access_token"],
-            refresh_token=data["refresh_token"],
-            created_at=datetime.fromisoformat(data["created_at"]),
-            expires_at=datetime.fromisoformat(data["expires_at"]),
-            last_active=datetime.fromisoformat(data["last_active"]),
-            ip_address=data.get("ip_address"),
-            user_agent=data.get("user_agent"),
-            metadata=data.get("metadata", {}),
-            is_revoked=data.get("is_revoked", False)
-        )
+        except Exception as exc:  # never let a background update raise
+            logger.warning("last_active update failed for %s: %s", session_id, exc)
